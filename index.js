@@ -50,6 +50,10 @@ for (const file of commandFiles) {
     }
   }
 }
+
+// Diagnostics: log loaded commands
+console.log(`Loaded ${client.commands.size} command entries (including aliases).`);
+console.log('Command keys:', [...client.commands.keys()].slice(0, 50).join(', '));
 // simple message-based prefix handling: prefix is "op" (case-insensitive)
 client.on("messageCreate", async (message) => {
   try {
@@ -111,6 +115,8 @@ const server = http.createServer((req, res) => {
       status: "ok",
       port: PORT,
       discord: client.user ? `${client.user.tag}` : null,
+      discord_logged_in: !!client.user,
+      discord_uptime_ms: client.uptime || null,
       uptimeSeconds: Math.floor(process.uptime()),
     };
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -157,38 +163,94 @@ if (!process.env.TOKEN) {
     }
   };
 
-  const checkTokenRest = async (token) => {
-    try {
-      const resp = await fetch('https://discord.com/api/v10/users/@me', {
-        headers: { Authorization: `Bot ${token}` },
-        method: 'GET',
-      });
-      if (resp.status === 200) {
-        const body = await resp.json();
-        console.log('✅ Token REST check succeeded, bot:', body.username ? `${body.username}#${body.discriminator || '????'}` : body);
-        return { ok: true, body };
+  // helper sleep
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+  const checkTokenRestWithRetries = async (token, maxAttempts = 3) => {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const resp = await fetch('https://discord.com/api/v10/users/@me', {
+          headers: { Authorization: `Bot ${token}` },
+          method: 'GET',
+        });
+
+        if (resp.status === 200) {
+          const body = await resp.json();
+          console.log('✅ Token REST check succeeded, bot:', body.username ? `${body.username}#${body.discriminator || '????'}` : body);
+          return { ok: true, body };
+        }
+
+        if (resp.status === 401) {
+          console.error('❌ Token REST check failed: 401 Unauthorized — invalid token');
+          return { ok: false, error: 'invalid_token', status: 401 };
+        }
+
+        if (resp.status === 429) {
+          // Rate limited; try to read retry_after
+          let retryAfterMs = 0;
+          try {
+            const json = await resp.json();
+            const retryAfter = json && (json.retry_after || json.retry_after_ms || json.retryAfter);
+            if (typeof retryAfter === 'number') retryAfterMs = Math.ceil(retryAfter * 1000);
+          } catch (e) {
+            // ignore
+          }
+          const headerRetry = resp.headers.get('retry-after');
+          if (headerRetry && !retryAfterMs) {
+            const h = Number(headerRetry);
+            if (!Number.isNaN(h)) retryAfterMs = Math.ceil(h * 1000);
+          }
+          const backoff = Math.ceil(5000 * Math.pow(2, attempt - 1));
+          const waitMs = Math.max(retryAfterMs || 0, backoff);
+          console.warn(`⚠️ Token REST check returned 429 (rate limited). Attempt ${attempt}/${maxAttempts}. Waiting ${waitMs}ms before retrying.`);
+          await sleep(waitMs);
+          continue;
+        }
+
+        console.error('❌ Token REST check returned status', resp.status);
+        return { ok: false, status: resp.status };
+      } catch (err) {
+        console.error('❌ Token REST check threw an error (attempt ' + attempt + '):', err && err.message ? err.message : err);
+        if (attempt < maxAttempts) {
+          const backoff = Math.ceil(2000 * Math.pow(2, attempt - 1));
+          await sleep(backoff);
+          continue;
+        }
+        return { ok: false, error: err };
       }
-      if (resp.status === 401) {
-        console.error('❌ Token REST check failed: 401 Unauthorized — invalid token');
-        return { ok: false, error: 'invalid_token', status: 401 };
+    }
+    return { ok: false, error: 'rate_limited' };
+  };
+
+  const loginWithRetries = async (token, attempts = 3) => {
+    for (let i = 1; i <= attempts; i++) {
+      try {
+        console.log(`Websocket login attempt ${i}/${attempts}`);
+        await Promise.race([
+          client.login(token),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Discord login timed out')), 60000)),
+        ]);
+        return { ok: true };
+      } catch (err) {
+        console.error(`Login attempt ${i} failed:`, err && err.message ? err.message : err);
+        if (i < attempts) {
+          const wait = Math.ceil(5000 * Math.pow(2, i - 1));
+          console.log(`Waiting ${wait}ms before retrying login...`);
+          await sleep(wait);
+          continue;
+        }
+        return { ok: false, error: err };
       }
-      console.error('❌ Token REST check returned status', resp.status);
-      return { ok: false, status: resp.status };
-    } catch (err) {
-      console.error('❌ Token REST check threw an error:', err && err.message ? err.message : err);
-      return { ok: false, error: err };
     }
   };
 
   (async () => {
     const dnsRes = await checkDiscordReachable();
-    const tokenRes = await checkTokenRest(process.env.TOKEN);
+    const tokenRes = await checkTokenRestWithRetries(process.env.TOKEN, 3);
 
     if (!dnsRes.ok) {
       console.error('Network/DNS check failed — outbound network to discord.com may be blocked from this environment.');
-      // Keep process alive for debugging instead of exiting so Render shows the service as up
-      // and you can inspect logs / try redeploying with network changes.
-      // Optionally exit to fail the deployment: process.exit(1);
+      // Keep process alive for debugging instead of exiting so you can debug; exit on invalid token was handled earlier.
     }
 
     if (!tokenRes.ok) {
@@ -196,8 +258,12 @@ if (!process.env.TOKEN) {
         console.error('❌ The provided TOKEN is invalid. Rotate the bot token and update Render environment variables.');
         process.exit(1);
       }
-      console.error('Token REST check failed:', tokenRes);
-      // Continue and attempt websocket login; it may still succeed if REST is flaky.
+      if (tokenRes.error === 'rate_limited' || tokenRes.status === 429) {
+        console.warn('⚠️ Token REST check is being rate limited. Proceeding to websocket login, but consider avoiding repeated REST checks and auto-registering commands on every deploy.');
+      } else {
+        console.error('Token REST check failed:', tokenRes);
+      }
+      // Continue and attempt websocket login; it may still succeed if REST is rate-limited.
     }
 
     // Add more event diagnostics for connection issues
@@ -205,21 +271,15 @@ if (!process.env.TOKEN) {
     client.on('shardError', (err) => console.error('shard error:', err));
     client.on('shardDisconnect', (event, shardId) => console.warn('shard disconnect:', { event, shardId }));
 
-    // Wrap login with a timeout so a hanging login doesn't indefinitely block deploy. Use 60s here.
-    const loginWithTimeout = (token, ms = 60000) => {
-      return Promise.race([
-        client.login(token),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Discord login timed out')), ms)),
-      ]);
-    };
-
     try {
-      console.log('Attempting websocket login (this may take a few seconds)...');
-      await loginWithTimeout(process.env.TOKEN, 60000);
+      const loginRes = await loginWithRetries(process.env.TOKEN, 3);
+      if (!loginRes.ok) {
+        console.error('❌ Discord websocket login failed after retries:', loginRes.error && loginRes.error.message ? loginRes.error.message : loginRes.error);
+        process.exit(1);
+      }
       console.log('✅ Discord login initiated — waiting for ready event...');
     } catch (err) {
-      console.error('❌ Discord websocket login failed:', err && err.message ? err.message : err);
-      // If login fails due to networking, don't immediately exit so you can debug; exit on invalid token was handled earlier.
+      console.error('❌ Unexpected error during websocket login:', err && err.message ? err.message : err);
       process.exit(1);
     }
   })();

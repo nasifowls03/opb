@@ -53,7 +53,9 @@ If you'd like, I can add a `Procfile`, a `render.yaml` template, or step-by-step
 
 ### Optional: Auto-register slash commands on start
 
-If you'd like the app to automatically attempt to register slash commands at startup, set the environment variable `REGISTER_COMMANDS_ON_START=true` on Render. This will run `deploy-commands.js` once at startup. Be careful — registering often can hit rate limits (429). Recommended: Run this manually when you add/modify commands, or use the `register` npm script.
+If you'd like the app to automatically attempt to register slash commands at startup, set the environment variable `REGISTER_COMMANDS_ON_START=true` on Render. This will run `deploy-commands.js` once at startup. Be careful — registering often can hit rate limits (429). Recommended: run the registration manually when you add/modify commands (run `npm run deploy`), or set `REGISTER_COMMANDS_ON_START=true` only when you intentionally want to register commands.
+
+Note: If you receive 429 responses while registering commands, wait the reported Retry-After interval before trying again. The code now includes retry/backoff logic but it's best not to repeatedly register on every deploy.
 
 ---
 
