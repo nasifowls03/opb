@@ -259,17 +259,17 @@ export async function execute(interactionOrMessage, client) {
     return parts.length ? parts.join(' • ') : 'None';
   }
 
+  // For pull/base embed, do NOT display exact boost numbers. Only show ability text without percents.
+  const abilitySafe = pulled.ability ? String(pulled.ability).replace(/\d+\s*%/g, '').trim() : '';
   if (wasDuplicate) {
     statsText = `**Power:** ${effectivePower}
 **Attack:** ${effectiveAttackMin} - ${effectiveAttackMax}
-**Health:** ${effectiveHealth}
-**Effect:** ${formatBoostText(displayEntry.boost)}`;
+**Health:** ${effectiveHealth}${abilitySafe ? `\n**Effect:** ${abilitySafe}` : ''}`;
   } else {
     statsText = `**Level:** ${displayLevel}
 **Power:** ${effectivePower}
 **Attack:** ${effectiveAttackMin} - ${effectiveAttackMax}
-**Health:** ${effectiveHealth}
-**Effect:** ${formatBoostText(displayEntry.boost)}`;
+**Health:** ${effectiveHealth}${abilitySafe ? `\n**Effect:** ${abilitySafe}` : ''}`;
   }
 
   // if this was a new acquisition, show the card's `title` as normal text in the description

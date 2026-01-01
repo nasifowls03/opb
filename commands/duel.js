@@ -233,7 +233,8 @@ export async function execute(interactionOrMessage) {
         if (special && special.range) special.range = roundRangeToFive([Math.round(special.range[0] || 0), Math.round(special.range[1] || 0)]);
 
         // Track special usage and exhaustion state for match
-        return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, usedSpecial: false, skipNextTurnPending: false, skipThisTurn: false };
+        // Add stamina (max 3) and attackedLastTurn flag for stamina regen rules
+        return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, usedSpecial: false, skipNextTurnPending: false, skipThisTurn: false, stamina: 3, attackedLastTurn: false };
       });
 
       // compute team-wide boosts (hp/atk/special) for p2
@@ -280,7 +281,7 @@ export async function execute(interactionOrMessage) {
         const finalHealth = roundNearestFive(Math.round(health));
         if (special && special.range) special.range = roundRangeToFive([Math.round(special.range[0] || 0), Math.round(special.range[1] || 0)]);
 
-        return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level };
+        return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, stamina: 3, attackedLastTurn: false };
       });
 
       // Determine who goes first (highest power)
@@ -336,6 +337,18 @@ async function startDuelTurn(sessionId, channel) {
   // then convert any pending skips into the active exhaustion for this current turn.
   attacker.cards.forEach(c => { c.skipThisTurn = false; });
   attacker.cards.forEach(c => { if (c.skipNextTurnPending) { c.skipThisTurn = true; c.skipNextTurnPending = false; } });
+
+  // Stamina regen: each time it's your turn, your cards gain 1 stamina (max 3)
+  // only if they did NOT attack last turn. After regen, clear attackedLastTurn flags.
+  attacker.cards.forEach(c => {
+    if (typeof c.stamina === 'number') {
+      if (!c.attackedLastTurn && c.stamina < 3) c.stamina = Math.min(3, c.stamina + 1);
+      // reset flag so cards can regen on subsequent turns if they refrain from attacking
+      c.attackedLastTurn = false;
+    } else {
+      c.stamina = 3; c.attackedLastTurn = false;
+    }
+  });
   normalizeLifeIndex(attacker);
   normalizeLifeIndex(defender);
 
@@ -358,7 +371,8 @@ async function startDuelTurn(sessionId, channel) {
     const name = c.card.name;
     const hp = Math.max(0, c.health);
     const extra = c.skipThisTurn ? ' (exhausted)' : '';
-    return `**${idx + 1}. ${name}**${extra} — HP: ${hp}/${c.maxHealth} ${renderHP(hp, c.maxHealth)}`;
+    const stam = (typeof c.stamina === 'number') ? c.stamina : 3;
+    return `**${idx + 1}. ${name}**${extra} — HP: ${hp}/${c.maxHealth} ${renderHP(hp, c.maxHealth)} • <:stamina:1456082884732391570> ${stam}/3`;
   }).join('\n');
 
   const embed = makeEmbed(
@@ -372,7 +386,7 @@ async function startDuelTurn(sessionId, channel) {
       .setCustomId(`duel_selectchar:${sessionId}:${idx}`)
       .setLabel(`${card.card.name}`)
       .setStyle(ButtonStyle.Primary)
-      .setDisabled(card.health <= 0 || card.skipThisTurn);
+      .setDisabled(card.health <= 0 || card.skipThisTurn || (typeof card.stamina === 'number' && card.stamina <= 0));
   });
 
   const rows = [];
@@ -439,17 +453,17 @@ async function selectAttackType(sessionId, charIdx, msg, attacker, channel) {
   const hasSpecial = !!card.card.specialAttack && !card.usedSpecial;
   const normalRange = card.scaled ? card.scaled.attackRange : (card.card.attackRange || [0,0]);
   const specialRange = card.scaled && card.scaled.specialAttack ? card.scaled.specialAttack.range : (card.card.specialAttack ? card.card.specialAttack.range : null);
+  const stam = (typeof card.stamina === 'number') ? card.stamina : 3;
   const embed = makeEmbed(
     "Choose Attack",
-    `${card.card.name} is attacking!\n\n**Normal Attack:** ${normalRange[0]}-${normalRange[1]} damage\n${hasSpecial ? `**Special Attack:** ${card.card.specialAttack.name} (${specialRange[0]}-${specialRange[1]} damage)` : "No special attack available"}`
+    `${card.card.name} is attacking!\n\n**Normal Attack:** ${normalRange[0]}-${normalRange[1]} damage (Cost: <:stamina:1456082884732391570> 1)\n${hasSpecial ? `**Special Attack:** ${card.card.specialAttack.name} (${specialRange[0]}-${specialRange[1]} damage) (Cost: <:stamina:1456082884732391570> 3)` : "No special attack available"}\n\nStamina: <:stamina:1456082884732391570> ${stam}/3`
   );
 
-  const buttons = [
-    new ButtonBuilder().setCustomId(`duel_attack:${sessionId}:${charIdx}:normal`).setLabel("Normal").setStyle(ButtonStyle.Primary),
-  ];
-
+  const buttons = [ new ButtonBuilder().setCustomId(`duel_attack:${sessionId}:${charIdx}:normal`).setLabel("Normal").setStyle(ButtonStyle.Primary) ];
   if (hasSpecial) {
-    buttons.push(new ButtonBuilder().setCustomId(`duel_attack:${sessionId}:${charIdx}:special`).setLabel("Special").setStyle(ButtonStyle.Danger));
+    // Only allow special when card has enough stamina (3)
+    const canUseSpecial = stam >= 3;
+    buttons.push(new ButtonBuilder().setCustomId(`duel_attack:${sessionId}:${charIdx}:special`).setLabel("Special").setStyle(ButtonStyle.Danger).setDisabled(!canUseSpecial));
   }
 
   const row = new ActionRowBuilder().addComponents(...buttons);
@@ -544,6 +558,11 @@ async function executeAttack(sessionId, charIdx, attackType, targetIdx, msg, att
   let isSpecial = false;
 
   if (attackType === "normal") {
+    // require 1 stamina for normal attack
+    if ((typeof attackerCard.stamina !== 'number') || attackerCard.stamina < 1) {
+      await msg.followUp({ content: "Not enough stamina to perform a normal attack!", ephemeral: true });
+      return;
+    }
     // 5% miss chance
     if (Math.random() < 0.05) {
       isMiss = true;
@@ -555,6 +574,11 @@ async function executeAttack(sessionId, charIdx, attackType, targetIdx, msg, att
     // Special attack button: guaranteed special attack when clicked
     const specialRange = attackerCard.scaled && attackerCard.scaled.specialAttack ? attackerCard.scaled.specialAttack.range : (attackerCard.card.specialAttack ? attackerCard.card.specialAttack.range : null);
     if (specialRange) {
+      // require 3 stamina for special
+      if ((typeof attackerCard.stamina !== 'number') || attackerCard.stamina < 3) {
+        await msg.followUp({ content: "Not enough stamina to perform the special attack!", ephemeral: true });
+        return;
+      }
       isSpecial = true;
       damage = randInt(specialRange[0], specialRange[1]);
       // mark that this card has used its special and schedule exhaustion next turn
@@ -677,6 +701,13 @@ async function executeAttack(sessionId, charIdx, attackType, targetIdx, msg, att
 
   // Delay and continue turn or switch to next player
   await new Promise(resolve => setTimeout(resolve, 2000));
+
+  // Deduct stamina and mark card as having attacked this turn
+  try {
+    if (isSpecial) attackerCard.stamina = Math.max(0, (attackerCard.stamina || 0) - 3);
+    else attackerCard.stamina = Math.max(0, (attackerCard.stamina || 0) - 1);
+    attackerCard.attackedLastTurn = true;
+  } catch (e) {}
 
   // Check if all opponent's cards are dead
   const allDead = defender.cards.every(card => card.health <= 0);

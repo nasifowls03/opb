@@ -8,16 +8,60 @@ export const category = "Economy";
 export const description = "Daily trivia mission";
 
 const QUESTIONS = [
-  { q: "What is Luffy's dream?", a: ["Be King of the Pirates","Become the strongest","Find One Piece","Own a ship"], correct: 0 },
-  { q: "Who is the swordsman of the Straw Hats?", a: ["Sanji","Zoro","Usopp","Chopper"], correct: 1 },
-  { q: "What fruit did Luffy eat?", a: ["Gomu Gomu no Mi","Mera Mera no Mi","Hito Hito no Mi","Bara Bara no Mi"], correct: 0 },
-  { q: "Who is the doctor in Straw Hats?", a: ["Nami","Robin","Chopper","Franky"], correct: 2 },
-  { q: "What is the name of the ship?", a: ["Thousand Sunny","Going Merry","Red Force","Oro Jackson"], correct: 1 },
-  { q: "Who is the navigator?", a: ["Nami","Robin","Bon Clay","Vivi"], correct: 0 },
-  { q: "Where is Zoro from?", a: ["Syrup Village","East Blue","Shimotsuki Village","Skypiea"], correct: 2 },
-  { q: "Who uses the Black Leg style?", a: ["Sanji","Zoro","Luffy","Brook"], correct: 0 },
-  { q: "Who taught Luffy to fight?", a: ["Rayleigh","Shanks","Whitebeard","Garp"], correct: 3 },
-  { q: "Who is the archeologist?", a: ["Robin","Nico","Nami","Boa"], correct: 0 }
+  { q: "Who was the first Straw Hat to be shown in the anime?", a: ["Roronoa Zoro","Monkey D. Luffy","Nami","Usopp"], correct: 1 },
+  { q: "How old was Luffy pre-time skip?", a: ["15","17","19","16"], correct: 1 },
+  { q: "Who was the first antagonist of One Piece?", a: ["Buggy","Arlong","Crocodile","Alvida"], correct: 3 },
+  { q: "What was the first ever named attack used by Luffy?", a: ["Gomu Gomu no Gatling","Gomu Gomu no Pistol","Gomu Gomu no Rocket","Gomu Gomu no Bazooka"], correct: 1 },
+  { q: "Where was Gol D. Roger executed?", a: ["Marineford","Loguetown","Water 7","Sabaody Archipelago"], correct: 1 },
+  { q: "What is the name of the dog in Orange Town?", a: ["Poro","ChouChou","Boodle","Hocker"], correct: 1 },
+  { q: "Who was the first Warlord of the sea to be introduced?", a: ["Crocodile","Dracule Mihawk","Bartholomew Kuma","Boa Hancock"], correct: 1 },
+  { q: "How many times did Zoro lose to Kuina?", a: ["1 time","10 times","100 times","2001 times"], correct: 3 },
+  { q: "What is the name of the Straw Hats' first ship?", a: ["Thousand Sunny","Going Merry","Red Force","Oro Jackson"], correct: 1 },
+  { q: "How many berries did Nami have to gather for Arlong in order to free Cocoyasi Village?", a: ["10,000 Berries","1,000,000 Berries","100,000,000 Berries","10,000,000 Berries"], correct: 2 },
+  { q: "Which devil fruit was the first to appear after Luffy's?", a: ["Mera Mera no Mi","Hie Hie no Mi","Gura Gura no Mi","Sube Sube no Mi (Alvida)"], correct: 3 },
+  { q: "Which sword does Zoro use with his mouth?", a: ["Enma","Wado Ichimonji","Sandai Kitetsu","Shusui"], correct: 1 },
+  { q: "True/False: Gaimon isn't filler", a: ["False","True","False","True"], correct: 1 },
+  { q: "What was Luffy's first bounty?", a: ["1,500,000 Berries","300,000 Berries","30,000,000 Berries","5,000,000 Berries"], correct: 2 },
+  { q: "What is Smoker's epithet?", a: ["The Smoky Marine","White Hunter","The White Chase","Iron Fist"], correct: 1 },
+  { q: "What was the first island the Straw Hats visited in the Grand Line?", a: ["Reverse Mountain","Twin Cape","Whisky Peak","Little Garden"], correct: 1 },
+  { q: "Which character is associated with the phrase 'Gya ga ga ga ga!'?", a: ["Brogy","Kaya","Perona","Mr. 2"], correct: 0 },
+  { q: "Where in the world was Sanji born?", a: ["East Blue","West Blue","South Blue","North Blue"], correct: 3 },
+  { q: "What is the name of Brook's old crew?", a: ["Sun Pirates","Rumbar Pirates","Red Hair Pirates","Blackbeard Pirates"], correct: 1 },
+  { q: "In which arc did Nico Robin wear this outfit?", a: ["Alabasta","Enies Lobby","Skypiea","Water 7"], correct: 0 },
+  { q: "Who defeated Miss Doublefinger in Alabasta?", a: ["Nami","Usopp","Sanji","Nico Robin"], correct: 0 },
+  { q: "Who is Ace's biological father?", a: ["Monkey D. Dragon","Gol D. Roger","Portgas D. Rouge","Whitebeard"], correct: 1 },
+  { q: "Where was Nami's weapon (Clima-Tact) first shown?", a: ["Drum Island","Arlong Park","Loguetown","Water 7"], correct: 1 },
+  { q: "Who was the doctor of Gol D. Roger's crew?", a: ["Tom","Crocus","Dr. Hiluluk","Hiriluk"], correct: 1 },
+  { q: "Which character has an obsession with cherry pies?", a: ["Mrs. Pink","Señor Pink","Charlotte Pudding","Tashigi"], correct: 1 },
+  { q: "Who of these characters can't use Observation Haki?", a: ["Sengoku","Jinbe","Kaku","Buggy"], correct: 3 },
+  { q: "Who was the first Marine Admiral to be introduced?", a: ["Sakazuki (Akainu)","Kuzan (Aokiji)","Borsalino (Kizaru)","Monkey D. Garp"], correct: 1 },
+  { q: "For whom did Tom entrust the Pluton blueprints?", a: ["Franky","Iceberg","Nico Robin","Tom himself"], correct: 0 },
+  { q: "Who was the Fleet Admiral of the Navy 3 decades ago?", a: ["Sengoku","Kong","Monkey D. Garp","Akainu"], correct: 1 },
+  { q: "True/False: Sanji has fought using his hands", a: ["False","True","False","True"], correct: 0 },
+  { q: "Which weapon did Uso... Sogeking use to shoot the World Government flag in Enies Lobby?", a: ["A pistol","Kabuto (slingshot)","A cannon","A flare"], correct: 1 },
+  { q: "What color is the transponder snail used to summon a Buster Call?", a: ["Blue","Golden (gold-colored)","Orange","Green"], correct: 1 },
+  { q: "What happened?", a: ["A battle","The World Government flag was shot down","An alliance","A betrayal"], correct: 1 },
+  { q: "What is the name of Kizaru's fruit?", a: ["Goro Goro no Mi","Pika Pika no Mi","Hie Hie no Mi","Mera Mera no Mi"], correct: 1 },
+  { q: "Which mark is the one used by Celestial Dragons?", a: ["Celestial Seal","Hoof of the Soaring Dragon","Saint Mark","Dragon Mark"], correct: 1 },
+  { q: "Who opened the Gate of Justice to Marineford for Luffy and the Impel Down escapees?", a: ["Jinbe","Emporio Ivankov","Marco","Whitebeard"], correct: 1 },
+  { q: "Which Straw Hat's voice actor voiced fake Zoro?", a: ["Hiroaki Hirata","Kazuya Nakai","Akemi Okamura","Kappei Yamaguchi"], correct: 1 },
+  { q: "In which arc was Franky's hair a cannon?", a: ["Water 7","Dressrosa Arc","Enies Lobby","Sabaody"], correct: 0 },
+  { q: "How many New Fishman pirates did Luffy defeat using Conqueror's Haki?", a: ["3","50,000","1","5"], correct: 0 },
+  { q: "Who took over Chopper's body in Punk Hazard?", a: ["Caesar Clown","Trafalgar Law","Momonosuke","Vergo"], correct: 1 },
+  { q: "True/False: Doflamingo resigned from the Seven Warlords", a: ["True","False","True","False"], correct: 0 },
+  { q: "Who has shrunk/broke Don Chinjao's drill head?", a: ["Baby 5","Monkey D. Luffy","Cavendish","Sabo"], correct: 0 },
+  { q: "Who won the fight of Block D? (Dressrosa)", a: ["Kyros","Rebecca","Bartolomeo","Don Chinjao"], correct: 0 },
+  { q: "Why exactly does Señor Pink wear baby clothes?", a: ["To intimidate opponents","Because his wife and child died, and it's how he honors them","To be fashionable","As a disguise"], correct: 1 },
+  { q: "Where was the first Road Poneglyph located that the Straw Hats found?", a: ["Zou","Skypiea","Fishman Island","Sabaody"], correct: 0 },
+  { q: "Who could not only listen, but communicate with Zunesha?", a: ["Kozuki Oden","Momonosuke","Kin'emon","Toko"], correct: 0 },
+  { q: "Who is the first son of Charlotte Linlin?", a: ["Katakuri","Charlotte Perospero","Pudding","Capone"], correct: 0 },
+  { q: "What is the only race/tribe you can't find on Totto Land as mentioned in the arc?", a: ["Giants","Merfolk","Fishmen","Longarm"], correct: 0 },
+  { q: "Who of these characters isn't royalty?", a: ["Pudding","Vivi","Nefertari Cobra","Nami"], correct: 3 },
+  { q: "In which arc was advanced Armament Haki/Ryuo first utilized?", a: ["Dressrosa","Wano Country Arc","Punk Hazard","Sabaody"], correct: 0 },
+  { q: "True/False: Momonosuke's sister is the oiran of Wano", a: ["True","False","True","False"], correct: 0 },
+  { q: "Which devil fruit does Sasaki have?", a: ["Ryu Ryu no Mi, Model: Triceratops","Riki Riki no Mi","Tori Tori no Mi","Ushi Ushi no Mi"], correct: 0 },
+  { q: "Who has the largest bust size of these characters?", a: ["Nami","Nico Robin","Tashigi","Boa Hancock"], correct: 3 },
+  { q: "Who of these characters isn't a former Rocks Pirate?", a: ["Kaido","Shiki","Big Mom","Whitebeard"], correct: 0 }
 ];
 
 function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
@@ -57,7 +101,7 @@ export async function execute(interactionOrMessage) {
     const q = picked[current];
     const embed = new EmbedBuilder()
       .setTitle(`Question ${current+1}`)
-      .setColor(0x00BFFF)
+      .setColor(0xD4AF37)
       .setDescription(q.q)
       .addFields(
         { name: "A", value: q.a[0], inline: true },
@@ -137,7 +181,7 @@ export async function execute(interactionOrMessage) {
 
       const resultEmbed = new EmbedBuilder()
         .setTitle("Mission Complete")
-        .setColor(0x00FF7F)
+        .setColor(0xD4AF37)
         .setDescription(`You answered ${correctCount}/${picked.length} correctly. You earned ${totalBeli}¥.`)
         .addFields({ name: "Chests", value: `C: ${chestGain.C} • B: ${chestGain.B} • A: ${chestGain.A}` });
 
