@@ -6,7 +6,7 @@
 
 export const extraCards = [
 	{
-		id: "luffy_z_newyears_2025",
+		id: "luffy_z_newyears_2026",
 		name: "(NEW YEARS) Monkey D Luffy",
 		title: "Event card",
 		rank: "Z",
@@ -15,7 +15,8 @@ export const extraCards = [
 		health: 750,
 		type: "Attack",
 		specialAttack: { name: "Gomu Gomu no Bajrang Gun", range: [200, 250], gif: "https://files.catbox.moe/toppyn.gif" },
-		ability: null,
+		ability: "Boosts team ATK and HP by 25%",
+		boost: { atk: 25, hp: 25 },
 		image: "https://files.catbox.moe/iteabf.jpg",
 		isUpgrade: false,
 		pullable: false

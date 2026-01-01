@@ -36,31 +36,31 @@ export async function execute(interactionOrMessage) {
 
   const codeKey = String(codeArg).trim();
 
-  // Ensure the code document exists (seed behavior) for NewYears2025
-  let codeDoc = await Code.findOne({ code: 'NewYears2025' });
+  // Ensure the code document exists (seed behavior) for NewYears2026
+  let codeDoc = await Code.findOne({ code: 'NewYears2026' });
   if (!codeDoc) {
     const expires = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000); // 3 days
-    codeDoc = new Code({ code: 'NewYears2025', expiresAt: expires, claimed: false });
+    codeDoc = new Code({ code: 'NewYears2026', expiresAt: expires, claimedBy: [] });
     await codeDoc.save().catch(() => {});
   }
 
   // Only support the one-time event code
-  if (codeKey.toLowerCase() !== 'newyears2025') {
+  if (codeKey.toLowerCase() !== 'newyears2026') {
     const reply = `Unknown code: ${codeArg}`;
     if (isInteraction) return interactionOrMessage.reply({ content: reply, ephemeral: true });
     return channel.send(reply);
   }
 
   // reload doc
-  codeDoc = await Code.findOne({ code: 'NewYears2025' });
+  codeDoc = await Code.findOne({ code: 'NewYears2026' });
   if (!codeDoc) {
     const reply = "Code unavailable.";
     if (isInteraction) return interactionOrMessage.reply({ content: reply, ephemeral: true });
     return channel.send(reply);
   }
 
-  if (codeDoc.claimed) {
-    const reply = "This code has already been claimed.";
+  if (codeDoc.claimedBy && codeDoc.claimedBy.includes(userId)) {
+    const reply = "You have already claimed this code.";
     if (isInteraction) return interactionOrMessage.reply({ content: reply, ephemeral: true });
     return channel.send(reply);
   }
@@ -88,7 +88,7 @@ export async function execute(interactionOrMessage) {
   await inv.save();
 
   // Give new card
-  const cardId = 'luffy_z_newyears_2025';
+  const cardId = 'luffy_z_newyears_2026';
   const card = getCardById(cardId);
   if (card) {
     let prog = await Progress.findOne({ userId });
@@ -102,9 +102,9 @@ export async function execute(interactionOrMessage) {
     await prog.save();
   }
 
-  // mark claimed globally
-  codeDoc.claimed = true;
-  codeDoc.claimedBy = userId;
+  // mark claimed by this user
+  codeDoc.claimedBy = codeDoc.claimedBy || [];
+  codeDoc.claimedBy.push(userId);
   await codeDoc.save();
 
   const embed = new EmbedBuilder()

@@ -13,26 +13,31 @@ export async function execute(interactionOrMessage, client) {
   try {
     const userId = String(user.id);
 
-    // Check existing account
-    const existing = await Progress.findOne({ userId });
-    if (existing) {
-      const replyText = "You already have an account. Use your existing account to continue your journey.";
-      if (isInteraction) return await interactionOrMessage.reply({ content: replyText, ephemeral: true });
-      return await channel.send({ content: replyText });
-    }
+    // Use findOneAndUpdate with upsert for all documents to avoid duplicate issues
+    await Progress.findOneAndUpdate(
+      { userId },
+      {
+        $set: {
+          cards: {
+            'luffy_c_01': { cardId: 'luffy_c_01', count: 1, xp: 0, level: 0 }
+          },
+          team: []
+        }
+      },
+      { upsert: true }
+    );
 
-    // Create Progress entry with starter Luffy card
-    const progress = new Progress({ userId, cards: {} });
-    progress.cards.set('luffy_c_01', { cardId: 'luffy_c_01', count: 1, xp: 0, level: 0 });
-    await progress.save();
+    await Inventory.findOneAndUpdate(
+      { userId },
+      { $set: { chests: { C: 3, B: 0, A: 0, S: 0 }, items: {}, xpBottles: 0, xpScrolls: 0, xpBooks: 0 } },
+      { upsert: true }
+    );
 
-    // Create Inventory with 3 C chests
-    const inventory = new Inventory({ userId, chests: { C: 3, B: 0, A: 0, S: 0 }, items: {} });
-    await inventory.save();
-
-    // Create Balance with 500 beli
-    const balance = new Balance({ userId, amount: 500 });
-    await balance.save();
+    await Balance.findOneAndUpdate(
+      { userId },
+      { $set: { amount: 500, resetTokens: 0, lastDaily: null, dailyStreak: 0, gambleWindow: 0, gamblesToday: 0, lastMission: null, xp: 0, level: 0 } },
+      { upsert: true }
+    );
 
     const embed = new EmbedBuilder()
       .setTitle('It all starts here!')

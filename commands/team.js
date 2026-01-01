@@ -113,8 +113,8 @@ export async function execute(interactionOrMessage, client) {
     prog.team = prog.team || [];
     if (prog.team.includes(card.id)) return sendReply(`${card.name} is already in your team.`);
     if (prog.team.length >= 3) return sendReply("Team is full (3 cards). Remove a card first.");
-    prog.team.push(card.id);
-    await prog.save();
+    const newTeam = [...prog.team, card.id];
+    await Progress.findOneAndUpdate({ userId }, { team: newTeam });
     return sendReply(`**${card.name}** added to your team.`);
   }
 
@@ -124,8 +124,9 @@ export async function execute(interactionOrMessage, client) {
     prog.team = prog.team || [];
     const idx = prog.team.indexOf(card.id);
     if (idx === -1) return sendReply(`${card.name} is not in your team.`);
-    prog.team.splice(idx, 1);
-    await prog.save();
+    const newTeam = [...prog.team];
+    newTeam.splice(idx, 1);
+    await Progress.findOneAndUpdate({ userId }, { team: newTeam });
     return sendReply(`**${card.name}** removed from your team.`);
   }
 
@@ -148,22 +149,17 @@ export async function execute(interactionOrMessage, client) {
     if (same) {
       return sendReply("Strongest possible team is already set!");
     }
-    prog.team = newTeam;
-    await prog.save();
+    // Use findOneAndUpdate to avoid version conflicts
+    await Progress.findOneAndUpdate({ userId }, { team: newTeam });
     return sendReply("Team automatically set to strongest cards.");
   }
 
   // view
   const teamIds = prog.team || [];
-  const lines = teamIds.map((id, i) => {
-    const card = getCardById(id);
-    const entry = (prog.cards instanceof Map ? prog.cards.get(id) : (prog.cards || {})[id]) || {};
-    if (!card) return `#${i+1}: Unknown (${id})`;
-    const level = entry.level || 0;
-    const power = roundNearestFive(Math.round((card.power || 0) * (1 + level * 0.01)));
-    const health = roundNearestFive(Math.round((card.health || 0) * (1 + level * 0.01)));
-    return `#${i+1}: **${card.name}** (${card.rank}) — Power: ${power} | HP: ${health}`;
-  });
+
+  // compute and show team boosts (if any)
+  const detailed = (teamIds && teamIds.length) ? computeTeamBoostsDetailed(teamIds, prog.cards) : { totals: { atk:0,hp:0,special:0 }, details: [] };
+  const boosts = detailed.totals;
 
   // compute average rank color
   let avgRankVal = 0;
@@ -182,27 +178,6 @@ export async function execute(interactionOrMessage, client) {
     if (d < bestDiff) { bestDiff = d; chosenColor = r.color; }
   }
 
-  // compute and show team boosts (if any)
-  const detailed = (teamIds && teamIds.length) ? computeTeamBoostsDetailed(teamIds, prog.cards) : { totals: { atk:0,hp:0,special:0 }, details: [] };
-  const boosts = detailed.totals;
-  let boostLine = '';
-  if (boosts.atk) boostLine += `ATK +${boosts.atk}%`;
-  if (boosts.hp) boostLine += (boostLine ? ' • ' : '') + `HP +${boosts.hp}%`;
-  if (boosts.special) boostLine += (boostLine ? ' • ' : '') + `SPECIAL +${boosts.special}%`;
-
-  // append per-card boost info to each line
-  const linesWithBoost = teamIds.map((id, i) => {
-    const card = getCardById(id);
-    const entry = detailed.details.find(d => d && d.id === id) || { atk:0,hp:0,special:0 };
-    const parts = [];
-    if (entry.atk) parts.push(`ATK+${entry.atk}%`);
-    if (entry.hp) parts.push(`HP+${entry.hp}%`);
-    if (entry.special) parts.push(`SP+${entry.special}%`);
-    return `${lines[i]}${parts.length ? ' • Boost: ' + parts.join('/') : ''}`;
-  });
-
-  const desc = (linesWithBoost.length ? linesWithBoost.join("\n") : "No team set. Use `op team add <card>` or `/team add <card>`.") + (boostLine ? "\n\nTeam Boosts: " + boostLine : "");
-
   // Ensure we have a proper Discord `User` to read username/avatar from
   let displayUser = user;
   try {
@@ -219,8 +194,49 @@ export async function execute(interactionOrMessage, client) {
   const embed = new EmbedBuilder()
     .setTitle(`${displayName}'s Team`)
     .setColor(chosenColor)
-    .setDescription(desc)
     .setFooter({ text: `Requested by ${displayName}`, iconURL: avatarURL });
+
+  if (!teamIds.length) {
+    embed.setDescription("No team set. Use `op team add <card>` or `/team add <card>`.");
+  } else {
+    const fields = teamIds.map((id, i) => {
+      const card = getCardById(id);
+      const entry = (prog.cards instanceof Map ? prog.cards.get(id) : (prog.cards || {})[id]) || {};
+      if (!card) return { name: `#${i+1}: Unknown`, value: `ID: ${id}`, inline: true };
+
+      const level = entry.level || 0;
+      const basePower = Math.round((card.power || 0) * (1 + level * 0.01));
+      const baseHealth = Math.round((card.health || 0) * (1 + level * 0.01));
+
+      const cardBoost = detailed.details.find(d => d && d.id === id) || { atk:0, hp:0, special:0 };
+      const effectivePower = roundNearestFive(Math.round(basePower * (1 + cardBoost.atk / 100)));
+      const effectiveHealth = roundNearestFive(Math.round(baseHealth * (1 + cardBoost.hp / 100)));
+
+      const boostParts = [];
+      if (cardBoost.atk) boostParts.push(`ATK+${cardBoost.atk}%`);
+      if (cardBoost.hp) boostParts.push(`HP+${cardBoost.hp}%`);
+      if (cardBoost.special) boostParts.push(`SP+${cardBoost.special}%`);
+
+      const value = `ATK: ${effectivePower} | HP: ${effectiveHealth}${boostParts.length ? `\nBoost: ${boostParts.join('/')}` : ''}`;
+
+      return {
+        name: `#${i+1}: ${card.name} (${card.rank})`,
+        value,
+        inline: true
+      };
+    });
+
+    embed.addFields(fields);
+
+    // Add team boosts if any
+    let boostDesc = '';
+    if (boosts.atk) boostDesc += `ATK +${boosts.atk}%`;
+    if (boosts.hp) boostDesc += (boostDesc ? ' • ' : '') + `HP +${boosts.hp}%`;
+    if (boosts.special) boostDesc += (boostDesc ? ' • ' : '') + `SPECIAL +${boosts.special}%`;
+    if (boostDesc) {
+      embed.addFields({ name: 'Team Boosts', value: boostDesc, inline: false });
+    }
+  }
 
   if (isInteraction) await interactionOrMessage.reply({ embeds: [embed] }); else await channel.send({ embeds: [embed] });
 

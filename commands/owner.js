@@ -3,6 +3,7 @@ import Balance from "../models/Balance.js";
 import Progress from "../models/Progress.js";
 import Inventory from "../models/Inventory.js";
 import Pull from "../models/Pull.js";
+import Code from "../models/Code.js";
 import { fuzzyFindCard } from "../lib/cardEmbed.js";
 import { cards } from "../cards.js";
 import Quest from "../models/Quest.js";
@@ -224,15 +225,25 @@ export async function execute(interactionOrMessage, client) {
       const reply = "Target user not specified or invalid.";
       if (isInteraction) return interactionOrMessage.reply({ content: reply, ephemeral: true }); else return channel.send(reply);
     }
-    await Promise.all([
-      Balance.deleteOne({ userId: target.id }),
-      Progress.deleteOne({ userId: target.id }),
-      Inventory.deleteOne({ userId: target.id }),
-      Pull.deleteOne({ userId: target.id }),
-      Quest.updateMany({}, { $unset: { [`progress.${target.id}`]: "" } })
-    ]);
-    const embed = new EmbedBuilder().setTitle("User Reset").setDescription(`Reset data for <@${target.id}>`).setColor(0xe74c3c);
-    if (isInteraction) return interactionOrMessage.reply({ embeds: [embed], ephemeral: true }); else return channel.send({ embeds: [embed] });
+    try {
+      const results = await Promise.all([
+        Balance.deleteOne({ userId: target.id }),
+        Progress.deleteOne({ userId: target.id }),
+        Inventory.deleteOne({ userId: target.id }),
+        Pull.deleteOne({ userId: target.id }),
+        // Handle Code claimedBy reset for both array and string formats
+        Code.updateMany({ claimedBy: { $type: 4 } }, { $pull: { claimedBy: target.id } }),
+        Code.updateMany({ claimedBy: target.id }, { $unset: { claimedBy: "" } }),
+        Quest.updateMany({}, { $unset: { [`progress.${target.id}`]: "" } })
+      ]);
+      console.log(`Reset results for user ${target.id}:`, results);
+      const embed = new EmbedBuilder().setTitle("User Reset").setDescription(`Reset data for <@${target.id}>`).setColor(0xe74c3c);
+      if (isInteraction) return interactionOrMessage.reply({ embeds: [embed], ephemeral: true }); else return channel.send({ embeds: [embed] });
+    } catch (err) {
+      console.error('Error resetting user:', err);
+      const reply = "Error resetting user data.";
+      if (isInteraction) return interactionOrMessage.reply({ content: reply, ephemeral: true }); else return channel.send(reply);
+    }
   }
 
   // Message-only: setdrops #channel | off
