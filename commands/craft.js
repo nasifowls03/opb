@@ -19,17 +19,17 @@ export const data = new SlashCommandBuilder()
     opt.setName("weapon").setDescription("Weapon name or ID to craft").setRequired(false)
   );
 
-function getWeaponById(weaponId) {
-  if (!weaponId) return null;
-  const q = String(weaponId).toLowerCase();
-  let weapon = cards.find((c) => c.type === "weapon" && c.id.toLowerCase() === q);
-  if (weapon) return weapon;
-  weapon = cards.find((c) => c.type === "weapon" && c.name.toLowerCase() === q);
-  if (weapon) return weapon;
-  weapon = cards.find((c) => c.type === "weapon" && c.name.toLowerCase().startsWith(q));
-  if (weapon) return weapon;
-  weapon = cards.find((c) => c.type === "weapon" && (c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q)));
-  return weapon || null;
+function getCraftableById(craftableId) {
+  if (!craftableId) return null;
+  const q = String(craftableId).toLowerCase();
+  let craftable = cards.find((c) => (c.type === "weapon" || (c.type === "item" && c.craftingRequirements)) && c.id.toLowerCase() === q);
+  if (craftable) return craftable;
+  craftable = cards.find((c) => (c.type === "weapon" || (c.type === "item" && c.craftingRequirements)) && c.name.toLowerCase() === q);
+  if (craftable) return craftable;
+  craftable = cards.find((c) => (c.type === "weapon" || (c.type === "item" && c.craftingRequirements)) && c.name.toLowerCase().startsWith(q));
+  if (craftable) return craftable;
+  craftable = cards.find((c) => (c.type === "weapon" || (c.type === "item" && c.craftingRequirements)) && (c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q)));
+  return craftable || null;
 }
 
 export async function execute(interactionOrMessage, client) {
@@ -62,25 +62,18 @@ export async function execute(interactionOrMessage, client) {
 
   // If no weapon specified, show all blueprints
   if (!weaponQuery) {
-    let progDoc = await Progress.findOne({ userId });
-    if (!progDoc) {
-      const reply = "You don't have any weapon blueprints.";
-      if (isInteraction) await interactionOrMessage.reply({ content: reply, ephemeral: true });
-      else await channel.send(reply);
-      return;
-    }
-
-    const cardsMap = progDoc.cards instanceof Map ? progDoc.cards : new Map(Object.entries(progDoc.cards || {}));
     const blueprintCards = [];
     
-    // Find all blueprint-type cards
-    for (const [cardId, entry] of cardsMap.entries()) {
-      const card = getCardById(cardId);
-      if (card && card.type === "item" && card.ability && card.ability.includes("Blueprint") && (entry.count || 0) > 0) {
-        // This is a blueprint card
-        const craftedWeapon = card.evolutions && card.evolutions[0] ? getCardById(card.evolutions[0]) : null;
-        if (craftedWeapon && craftedWeapon.type === "weapon") {
-          blueprintCards.push({ card, weapon: craftedWeapon, count: entry.count });
+    // Find all blueprint-type cards in weaponInv.blueprints
+    for (const [cardId, count] of Object.entries(weaponInv.blueprints || {})) {
+      if (count > 0) {
+        const card = getCardById(cardId);
+        if (card && card.type === "item" && card.ability && card.ability.includes("Blueprint")) {
+          // This is a blueprint card
+          const craftedWeapon = card.evolutions && card.evolutions[0] ? getCardById(card.evolutions[0]) : null;
+          if (craftedWeapon && craftedWeapon.type === "weapon") {
+            blueprintCards.push({ card, weapon: craftedWeapon, count });
+          }
         }
       }
     }
@@ -155,9 +148,9 @@ export async function execute(interactionOrMessage, client) {
     return;
   }
 
-  // Check if user has the blueprint card
-  const blueprintEntry = cardsMap.get(blueprintCard.id) || null;
-  if (!blueprintEntry || (blueprintEntry.count || 0) <= 0) {
+  // Check if user has the blueprint
+  const blueprintCount = weaponInv.blueprints[blueprintCard.id] || 0;
+  if (blueprintCount <= 0) {
     const reply = `You don't have a blueprint for **${weapon.name}**.`;
     if (isInteraction) await interactionOrMessage.reply({ content: reply, ephemeral: true });
     else await channel.send(reply);
@@ -250,6 +243,11 @@ export async function execute(interactionOrMessage, client) {
     inventory.markModified('items');
     await inventory.save();
   }
+  // Consume the blueprint
+  weaponInv.blueprints[blueprintCard.id] = blueprintCount - 1;
+  if (weaponInv.blueprints[blueprintCard.id] <= 0) delete weaponInv.blueprints[blueprintCard.id];
+  weaponInv.markModified('blueprints');
+
   await weaponInv.save();
 
   // Deduct beli if there's a crafting cost

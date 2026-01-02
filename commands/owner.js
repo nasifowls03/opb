@@ -4,6 +4,7 @@ import Progress from "../models/Progress.js";
 import Inventory from "../models/Inventory.js";
 import Pull from "../models/Pull.js";
 import Code from "../models/Code.js";
+import SailProgress from "../models/SailProgress.js";
 import { fuzzyFindCard } from "../lib/cardEmbed.js";
 import { cards } from "../cards.js";
 import Quest from "../models/Quest.js";
@@ -16,7 +17,8 @@ export const data = new SlashCommandBuilder()
     .addSubcommand(s => s.setName("give-money").setDescription("Give a user money").addUserOption(o => o.setName("user").setDescription("Target user to receive money").setRequired(true)).addNumberOption(o => o.setName("amount").setDescription("Amount of money to give").setRequired(true)))
     .addSubcommand(s => s.setName("give-item").setDescription("Give an item to a user").addUserOption(o => o.setName("user").setDescription("Target user to receive the item").setRequired(true)).addStringOption(o => o.setName("item").setRequired(true).setDescription("resettoken | chestB | chestA | chestS etc.")).addIntegerOption(o => o.setName("amount").setDescription("Amount of the item to give").setRequired(true)))
     .addSubcommand(s => s.setName("give-card").setDescription("Give a card to a user").addUserOption(o => o.setName("user").setDescription("Target user to receive the card").setRequired(true)).addStringOption(o => o.setName("card").setDescription("Card name or id to give").setRequired(true)))
-    .addSubcommand(s => s.setName("reset").setDescription("Reset a user's data").addUserOption(o => o.setName("user").setDescription("Target user to reset").setRequired(true))));
+    .addSubcommand(s => s.setName("reset").setDescription("Reset a user's data").addUserOption(o => o.setName("user").setDescription("Target user to reset").setRequired(true)))
+    .addSubcommand(s => s.setName("reset-sail").setDescription("Reset a user's sail progress").addUserOption(o => o.setName("user").setDescription("Target user").setRequired(true))));
 
 export const aliases = ["ownercmds"];
 
@@ -87,6 +89,7 @@ export async function execute(interactionOrMessage, client) {
           "• `op owner give-card <card id or name> <@user>` — give a card to user\n" +
           "• `op owner give-money <amount> <@user>` — give money to user\n" +
           "• `op owner reset <@user>` — reset a user's data\n" +
+          "• `op owner reset-sail <@user>` — reset a user's sail progress\n" +
           "• `op owner setdrops <#channel|off>` — set a channel where random cards are dropped every 5 minutes (first drop sent immediately)\n" +
           "• `op owner unsetdrops` — disable drops for this server\n" +
           "• `op owner setreset <#channel|off>` — set a channel where the bot will post a message every global pull reset\n" +
@@ -242,6 +245,28 @@ export async function execute(interactionOrMessage, client) {
     } catch (err) {
       console.error('Error resetting user:', err);
       const reply = "Error resetting user data.";
+      if (isInteraction) return interactionOrMessage.reply({ content: reply, ephemeral: true }); else return channel.send(reply);
+    }
+  }
+
+  if (sub === "reset-sail") {
+    let target;
+    if (isInteraction) target = interactionOrMessage.options.getUser("user");
+    else {
+      const parts = interactionOrMessage._rawParts || interactionOrMessage.content.trim().split(/\s+/);
+      target = parts[3] ? { id: parts[3].replace(/[^0-9]/g, ""), username: parts[3] } : null;
+    }
+    if (!target || !target.id) {
+      const reply = "Target user not specified or invalid.";
+      if (isInteraction) return interactionOrMessage.reply({ content: reply, ephemeral: true }); else return channel.send(reply);
+    }
+    try {
+      await SailProgress.deleteOne({ userId: target.id });
+      const embed = new EmbedBuilder().setTitle("Sail Progress Reset").setDescription(`Reset sail progress for <@${target.id}>`).setColor(0xe74c3c);
+      if (isInteraction) return interactionOrMessage.reply({ embeds: [embed], ephemeral: true }); else return channel.send({ embeds: [embed] });
+    } catch (err) {
+      console.error('Error resetting sail progress:', err);
+      const reply = "Error resetting sail progress.";
       if (isInteraction) return interactionOrMessage.reply({ content: reply, ephemeral: true }); else return channel.send(reply);
     }
   }

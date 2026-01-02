@@ -151,6 +151,9 @@ export async function execute(interactionOrMessage) {
         WeaponInventory.findOne({ userId: opponent.id })
       ]);
 
+      const p1HasBanner = p1Winv && p1Winv.weapons && Array.from(p1Winv.weapons.values()).some(w => w.id === 'alvida_pirates_banner_c_01');
+      const p2HasBanner = p2Winv && p2Winv.weapons && Array.from(p2Winv.weapons.values()).some(w => w.id === 'alvida_pirates_banner_c_01');
+
       function getEquippedWeaponForCard(winv, cardId) {
         if (!winv || !winv.weapons) return null;
         if (winv.weapons instanceof Map) {
@@ -225,6 +228,15 @@ export async function execute(interactionOrMessage) {
           special.range = [Math.round(special.range[0] * spMul), Math.round(special.range[1] * spMul)];
         }
 
+        // Apply banner passive boost
+        const bannerSignature = ['alvida_c_01', 'heppoko_c_01', 'peppoko_c_01', 'poppoko_c_01', 'koby_c_01'];
+        if (p1HasBanner && bannerSignature.includes(cardId)) {
+          attackMin = Math.round(attackMin * 1.05);
+          attackMax = Math.round(attackMax * 1.05);
+          power = Math.round(power * 1.05);
+          health = Math.round(health * 1.05);
+        }
+
         // Ensure stats are rounded to nearest 5 for consistency
         const finalPower = roundNearestFive(Math.round(power));
         const finalAttackMin = roundNearestFive(Math.round(attackMin));
@@ -272,6 +284,15 @@ export async function execute(interactionOrMessage) {
             attackMax += atkBoost;
             health += hpBoost;
           }
+        }
+
+        // Apply banner passive boost
+        const bannerSignature = ['alvida_c_01', 'heppoko_c_01', 'peppoko_c_01', 'poppoko_c_01', 'koby_c_01'];
+        if (p2HasBanner && bannerSignature.includes(cardId)) {
+          attackMin = Math.round(attackMin * 1.05);
+          attackMax = Math.round(attackMax * 1.05);
+          power = Math.round(power * 1.05);
+          health = Math.round(health * 1.05);
         }
 
         // Ensure stats are rounded to nearest 5 for consistency

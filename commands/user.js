@@ -57,13 +57,57 @@ export async function execute(interactionOrMessage, client){
     Inventory.findOne({ userId })
   ]);
 
-  const level = (bal && (bal.level || 0)) || 0;
-  const xp = (bal && (bal.xp || 0)) || 0;
+  if (!bal) bal = new Balance({ userId });
+  if (!inv) inv = new Inventory({ userId });
+
+  // Check for level up rewards
+  let rewardMessage = '';
+  if (prog && prog.userLevel > (prog.claimedLevel || 0)) {
+    const startLevel = (prog.claimedLevel || 0) + 1;
+    const endLevel = prog.userLevel;
+    let totalBeli = 0;
+    let chests = [];
+    for (let lvl = startLevel; lvl <= endLevel; lvl++) {
+      totalBeli += 50 + (lvl - 1) * 10;
+      if (Math.random() < 0.1) {
+        let tier;
+        if (lvl <= 10) tier = 'C';
+        else if (lvl <= 20) tier = 'B';
+        else tier = 'S';
+        chests.push(tier);
+      }
+    }
+    // Update balance
+    bal.balance = (bal.balance || 0) + totalBeli;
+    await bal.save();
+    // Update inventory
+    for (const tier of chests) {
+      inv.chests = inv.chests || {};
+      inv.chests[tier] = (inv.chests[tier] || 0) + 1;
+    }
+    await inv.save();
+    // Update claimed
+    prog.claimedLevel = endLevel;
+    await prog.save();
+    // Build message
+    rewardMessage = `**Level up rewards claimed!**\n+${totalBeli} beli`;
+    if (chests.length > 0) {
+      const chestCounts = {};
+      for (const t of chests) chestCounts[t] = (chestCounts[t] || 0) + 1;
+      for (const [t, c] of Object.entries(chestCounts)) {
+        rewardMessage += `\n+${c} ${t} tier chest${c > 1 ? 's' : ''}`;
+      }
+    }
+    rewardMessage += '\n\n';
+  }
+
+  const level = (prog && (prog.userLevel || 0)) || 0;
+  const xp = (prog && (prog.userXp || 0)) || 0;
   const xpToNext = 100 - (xp % 100 || 0);
   const bar = progressBar(xp % 100, 100, 20);
 
-  const wealth = (bal && bal.amount) || 0;
-  const higher = await Balance.countDocuments({ amount: { $gt: wealth } });
+  const wealth = (bal && (bal.balance || bal.amount)) || 0;
+  const higher = await Balance.countDocuments({ $or: [{ amount: { $gt: wealth } }, { balance: { $gt: wealth } }] });
   const globalRank = higher + 1;
 
   // team and average power

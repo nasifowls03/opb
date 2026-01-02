@@ -2,7 +2,8 @@ import mongoose from "../lib/mongoose-shim.js";
 
 const BalanceSchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true },
-  amount: { type: Number, default: 500 },
+  balance: { type: Number, default: 500 },
+  amount: { type: Number, default: 500 }, // alias
   resetTokens: { type: Number, default: 0 },
   // daily rewards tracking
   lastDaily: { type: Date },

@@ -1897,6 +1897,25 @@ export const cards = [
     },
     evolutions: ["wadoichimonji_blueprint_ss_01"],
   },
+  {
+    id: "alvida_pirates_banner_c_01",
+    name: "Alvida Pirates Banner",
+    title: "Alvida Pirates banner",
+    rank: "C",
+    type: "weapon",
+    pullable: false,
+    boost: { atk: 5, hp: 5 },
+    signatureCards: ["alvida_c_01", "heppoko_c_01", "peppoko_c_01", "poppoko_c_01", "koby_c_01"],
+    mainCard: "alvida_c_01",
+    image: "https://files.catbox.moe/placeholder.webp",
+    craftingRequirements: {
+      materials: {
+        "Leather": 3
+      },
+      cost: 1000
+    },
+    evolutions: ["alvida_pirates_banner_blueprint_c_01"],
+  },
   // WEAPON BLUEPRINTS
   {
     id: "wadoichimonji_blueprint_ss_01",
@@ -1907,6 +1926,23 @@ export const cards = [
     ability: "Blueprint for crafting Wado Ichimonji",
     image: "https://files.catbox.moe/z99v28.webp",
     evolutions: ["wadoichimonji_ss_01"],
+    isUpgrade: false,
+  },
+  {
+    id: "alvida_pirates_banner_blueprint_c_01",
+    name: "Alvida Pirates Banner Blueprint",
+    title: "Alvida Pirates banner blueprint",
+    rank: "C",
+    type: "item",
+    ability: "Blueprint for crafting Alvida Pirates Banner",
+    image: "https://files.catbox.moe/placeholder.webp",
+    craftingRequirements: {
+      materials: {
+        "Leather": 3
+      },
+      cost: 500
+    },
+    evolutions: ["alvida_pirates_banner_c_01"],
     isUpgrade: false,
   },
   // --- USER ADDED CARDS ---
@@ -2264,7 +2300,7 @@ export const cards = [
     boost: { hp: 10 }, image: "https://files.catbox.moe/6ljbcb.webp" },
 
   // Alvida
-  { id: "Alvida_c_01", name: "Alvida", title: "Captain of the Alvida pirates", rank: "C", power: 32, attackRange: [7, 16], health: 95, type: "Attack", ability: null, image: "https://files.catbox.moe/ozkqj1.webp", evolutions: ["Alvida_a_02"] },
+  { id: "Alvida_c_01", name: "Alvida", title: "Captain of the Alvida pirates", rank: "C", power: 32, attackRange: [7, 16], health: 95, type: "Attack", specialAttack: { name: "Iron Mace", range: [20, 30] }, ability: null, image: "https://files.catbox.moe/ozkqj1.webp", evolutions: ["Alvida_a_02"] },
   { id: "Alvida_a_02", name: "Alvida", title: "Captain of the Alvida pirates", rank: "A", power: 130, attackRange: [24, 44], health: 200, type: "Attack", ability: null, image: "https://files.catbox.moe/aultot.webp", evolutions: [], isUpgrade: true, upgradeRequirements: { cost: 4500, minLevel: 25 } },
 
   // TITLE: Member of the Alvida pirates

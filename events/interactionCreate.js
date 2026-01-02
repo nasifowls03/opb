@@ -1,7 +1,8 @@
 import Progress from "../models/Progress.js";
+import WeaponInventory from "../models/WeaponInventory.js";
 import { getCardById, getRankInfo } from "../cards.js";
 import { buildCardEmbed, buildUserCardEmbed } from "../lib/cardEmbed.js";
-import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } from "discord.js";
+import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, MessageFlags } from "discord.js";
 import { roundNearestFive } from "../lib/stats.js";
 
 export const name = "interactionCreate";
@@ -27,6 +28,224 @@ function getEvolutionChain(rootCard) {
 }
 
 export async function execute(interaction, client) {
+  const startSailTurn = async (sessionId, channel) => {
+    const session = global.SAIL_SESSIONS.get(sessionId);
+    if (!session) return;
+
+    // Normalize lifeIndex
+    if (!session.cards || session.cards.length === 0) return;
+    if (session.lifeIndex == null || session.lifeIndex >= session.cards.length || session.cards[session.lifeIndex].health <= 0) {
+      const idx = session.cards.findIndex(c => c.health > 0);
+      session.lifeIndex = idx === -1 ? session.cards.length : idx;
+    }
+
+    // Clear any previous "skipThisTurn" flags,
+    // then convert any pending skips into the active exhaustion for this current turn.
+    session.cards.forEach(c => { c.skipThisTurn = false; });
+    session.cards.forEach(c => { if (c.skipNextTurnPending) { c.skipThisTurn = true; c.skipNextTurnPending = false; } });
+
+    // Regenerate stamina for cards that didn't attack last turn
+    session.cards.forEach(c => {
+      if (!c.attackedLastTurn) {
+        c.stamina = Math.min(3, (c.stamina ?? 3) + 1);
+      }
+      c.attackedLastTurn = false;
+    });
+
+    // Check if player lost
+    if (session.lifeIndex >= session.cards.length) {
+      await endSailBattle(sessionId, channel, false);
+      return;
+    }
+
+    // Check if enemies dead
+    const aliveEnemies = session.enemies.filter(e => e.health > 0);
+    if (aliveEnemies.length === 0) {
+      if (session.phase === 1) {
+        session.enemies = [{ name: 'Poppoko', health: 75, maxHealth: 75, attackRange: [10,15], power: 10 }];
+        session.phase = 2;
+      } else if (session.phase === 2) {
+        session.enemies = [{ name: 'Alvida', health: 120, maxHealth: 120, attackRange: [10,20], power: 20 }];
+        session.phase = 3;
+      } else {
+        await endSailBattle(sessionId, channel, true);
+        return;
+      }
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('Sail Battle')
+      .setDescription(`Phase ${session.phase}: Fight!`)
+      .addFields(
+        { name: 'Your Team', value: session.cards.map((c, idx) => `**${idx + 1}. ${c.card.name}** — HP: ${c.health}/${c.maxHealth} • Stamina: ${c.stamina ?? 3}/3`).join('\n'), inline: false },
+        { name: 'Enemies', value: session.enemies.map(e => `**${e.name}** — HP: ${e.health}/${e.maxHealth}`).join('\n'), inline: false }
+      );
+
+    const attackButtons = session.cards.map((c, idx) =>
+      new ButtonBuilder()
+        .setCustomId(`sail_selectchar:${sessionId}:${idx}`)
+        .setLabel(`${c.card.name}`)
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(c.health <= 0 || (c.stamina ?? 3) <= 0)
+    );
+
+    const healButton = new ButtonBuilder()
+      .setCustomId(`sail_heal:${sessionId}`)
+      .setLabel('Heal')
+      .setStyle(ButtonStyle.Success);
+
+    const rows = [];
+    for (let i = 0; i < attackButtons.length; i += 5) {
+      rows.push(new ActionRowBuilder().addComponents(attackButtons.slice(i, i + 5)));
+    }
+    rows.push(new ActionRowBuilder().addComponents(healButton));
+
+    const msg = await channel.send({ embeds: [embed], components: rows });
+    session.msgId = msg.id;
+  };
+
+  const endSailBattle = async (sessionId, channel, won) => {
+    const session = global.SAIL_SESSIONS.get(sessionId);
+    if (!session) return;
+    if (session.rewarded) return;
+    session.rewarded = true;
+
+    if (won) {
+      // Give rewards
+      const Balance = (await import("../models/Balance.js")).default;
+      const Inventory = (await import("../models/Inventory.js")).default;
+      const WeaponInventory = (await import("../models/WeaponInventory.js")).default;
+      const SailProgress = (await import("../models/SailProgress.js")).default;
+
+      const balance = await Balance.findOne({ userId: session.userId }) || new Balance({ userId: session.userId });
+      const inventory = await Inventory.findOne({ userId: session.userId }) || new Inventory({ userId: session.userId });
+      const sailProgress = await SailProgress.findOne({ userId: session.userId }) || new SailProgress({ userId: session.userId });
+
+      // Rewards: 100-250 beli
+      const beli = Math.floor(Math.random() * 151) + 100;
+      balance.balance += beli;
+
+      // 1-2 C chests
+      const chests = Math.floor(Math.random() * 2) + 1;
+      inventory.chests.C += chests;
+
+      // 1 reset token 50%
+      let resetToken = false;
+      if (Math.random() < 0.5) {
+        // Assume reset token is an item
+        if (!inventory.items) inventory.items = new Map();
+        inventory.items.set('reset token', (inventory.items.get('reset token') || 0) + 1);
+        resetToken = true;
+      }
+
+      // Cards
+      const Progress = (await import("../models/Progress.js")).default;
+      const progress = await Progress.findOne({ userId: session.userId });
+      if (!progress) {
+        progress = new Progress({ userId: session.userId, team: [], cards: new Map() });
+      }
+      let weaponInv = await WeaponInventory.findOne({ userId: session.userId });
+      if (!weaponInv) {
+        weaponInv = new WeaponInventory({ userId: session.userId, blueprints: {}, weapons: {}, materials: {} });
+      }
+      if (!progress.cards) progress.cards = new Map();
+
+      // Coby
+      progress.cards.set('koby_c_01', { level: 1, xp: 0, count: 1 });
+      // Hard mode extras
+      if (sailProgress.difficulty === 'hard') {
+        progress.cards.set('Alvida_c_01', { level: 1, xp: 0, count: 1 });
+        progress.cards.set('heppoko_c_01', { level: 1, xp: 0, count: 1 });
+        progress.cards.set('Peppoko_c_01', { level: 1, xp: 0, count: 1 });
+        progress.cards.set('Poppoko_c_01', { level: 1, xp: 0, count: 1 });
+        // Blueprint
+        weaponInv.blueprints['alvida_pirates_banner_blueprint_c_01'] = (weaponInv.blueprints['alvida_pirates_banner_blueprint_c_01'] || 0) + 1;
+      }
+
+      await balance.save();
+      await inventory.save();
+      await weaponInv.save();
+      await progress.save();
+
+      // Progress to next
+      sailProgress.progress = 2;
+      await sailProgress.save();
+
+      const embed = new EmbedBuilder()
+        .setTitle('Victory!')
+        .setDescription('You completed Episode 1!')
+        .addFields(
+          { name: 'Rewards', value: `${beli} beli\n${chests} C tier chest${chests > 1 ? 's' : ''}${resetToken ? '\n1 reset token' : ''}\n1x Koby card${sailProgress.difficulty === 'hard' ? '\n1x Alvida card\n1x Heppoko card\n1x Peppoko card\n1x Poppoko card\n1x Alvida Pirates banner blueprint' : ''}`, inline: false }
+        );
+
+      await channel.send({ embeds: [embed] });
+    } else {
+      const embed = new EmbedBuilder()
+        .setTitle('Defeat')
+        .setDescription('You were defeated. Try again later.');
+
+      await channel.send({ embeds: [embed] });
+    }
+
+    global.SAIL_SESSIONS.delete(sessionId);
+  };
+
+  const enemyAttack = async (session, channel) => {
+    const aliveEnemies = session.enemies.filter(e => e.health > 0);
+    if (aliveEnemies.length === 0) return;
+    let targetIndex = 0;
+    let maxPower = 0;
+    session.cards.forEach((c, idx) => {
+      if (c.health > 0 && c.scaled.power > maxPower) {
+        maxPower = c.scaled.power;
+        targetIndex = idx;
+      }
+    });
+    const target = session.cards[targetIndex];
+    let totalDamage = 0;
+    const damageDetails = [];
+    for (const enemy of aliveEnemies) {
+      const damage = Math.floor(Math.random() * (enemy.attackRange[1] - enemy.attackRange[0] + 1)) + enemy.attackRange[0];
+      target.health -= damage;
+      totalDamage += damage;
+      damageDetails.push(`${enemy.name} attacks for ${damage} damage!`);
+      if (target.health < 0) target.health = 0;
+    }
+    const attackEmbed = new EmbedBuilder()
+      .setTitle('Enemy Attack')
+      .setDescription(damageDetails.join('\n') + `\n\nTotal: ${totalDamage} damage!`);
+    await channel.send({ embeds: [attackEmbed] });
+  };
+
+  const performSailAttack = async (session, cardIndex, enemy, actionType, interaction) => {
+    const card = session.cards[cardIndex];
+    let damage;
+    if (actionType === 'attack') {
+      damage = Math.floor(Math.random() * (card.scaled.attackRange[1] - card.scaled.attackRange[0] + 1)) + card.scaled.attackRange[0];
+      card.stamina = Math.max(0, (card.stamina ?? 3) - 1);
+    } else if (actionType === 'special') {
+      const special = card.scaled.specialAttack;
+      damage = Math.floor(Math.random() * (special.range[1] - special.range[0] + 1)) + special.range[0];
+      card.stamina = Math.max(0, (card.stamina ?? 3) - 3);
+      card.usedSpecial = true;
+      card.skipNextTurnPending = true;
+    }
+    card.attackedLastTurn = true;
+    enemy.health -= damage;
+    if (enemy.health < 0) enemy.health = 0;
+    const resultEmbed = new EmbedBuilder()
+      .setTitle(actionType === 'special' ? `Special Attack: ${card.scaled.specialAttack.name}` : 'Attack Result')
+      .setDescription(`${card.card.name} ${actionType}s ${enemy.name} for ${damage} damage!`);
+    if (actionType === 'special' && card.scaled.specialAttack.gif) {
+      resultEmbed.setImage(card.scaled.specialAttack.gif);
+    }
+    await interaction.update({ embeds: [resultEmbed], components: [] });
+    setTimeout(async () => {
+      await enemyAttack(session, interaction.channel);
+      await startSailTurn(session.sessionId, interaction.channel);
+    }, 2000);
+  };
+
   // Diagnostics: log interactions to verify they arrive in runtime logs
   try {
     try {
@@ -162,12 +381,30 @@ export async function execute(interaction, client) {
         await interaction.update({ embeds: [embed], components: [backRow] });
         return;
       }
+
+      // sail difficulty select
+      if (id.startsWith("sail_difficulty:")) {
+        const parts = id.split(":");
+        const userId = parts[1];
+        if (interaction.user.id !== userId) return interaction.reply({ content: "Only the original requester can use this select.", ephemeral: true });
+
+        const selected = interaction.values && interaction.values[0];
+        if (!selected) return;
+
+        const SailProgress = (await import("../models/SailProgress.js")).default;
+        let sailProgress = await SailProgress.findOne({ userId }) || new SailProgress({ userId });
+        sailProgress.difficulty = selected;
+        await sailProgress.save();
+
+        await interaction.reply({ content: `Difficulty set to ${selected}.`, flags: MessageFlags.Ephemeral });
+        return;
+      }
     }
 
     if (interaction.isButton()) {
       const id = interaction.customId || "";
       // only handle known prefixes (include shop_ and duel_). Let per-message duel_* collectors handle duel interactions.
-      if (!id.startsWith("info_") && !id.startsWith("collection_") && !id.startsWith("quest_") && !id.startsWith("help_") && !id.startsWith("drop_claim") && !id.startsWith("shop_") && !id.startsWith("duel_") && !id.startsWith("leaderboard_")) return;
+      if (!id.startsWith("info_") && !id.startsWith("collection_") && !id.startsWith("quest_") && !id.startsWith("help_") && !id.startsWith("drop_claim") && !id.startsWith("shop_") && !id.startsWith("duel_") && !id.startsWith("leaderboard_") && !id.startsWith("sail:") && !id.startsWith("sail_battle:") && !id.startsWith("sail_selectchar:") && !id.startsWith("sail_chooseaction:") && !id.startsWith("sail_selecttarget:") && !id.startsWith("sail_heal:") && !id.startsWith("sail_heal_item:") && !id.startsWith("sail_heal_card:")) return;
       // ignore duel_* here so message-level collectors in `commands/duel.js` receive them
       if (id.startsWith("duel_")) return;
 
@@ -382,6 +619,371 @@ export async function execute(interaction, client) {
           await interaction.reply({ content: 'Error loading leaderboard.', ephemeral: true });
           return;
         }
+      }
+
+      // Handle sail buttons
+      if (action === "sail") {
+        const userId = ownerId;
+        const subaction = parts[2];
+
+        if (interaction.user.id !== userId) {
+          await interaction.reply({ content: "Only the original requester can use these buttons.", ephemeral: true });
+          return;
+        }
+
+        const SailProgress = (await import("../models/SailProgress.js")).default;
+        const Progress = (await import("../models/Progress.js")).default;
+        let sailProgress = await SailProgress.findOne({ userId }) || new SailProgress({ userId });
+        const progress = await Progress.findOne({ userId });
+
+        if (subaction === "sail") {
+          // Progress to next episode
+          if (sailProgress.progress === 0) {
+            sailProgress.progress = 1;
+            const stars = sailProgress.difficulty === 'medium' ? 2 : sailProgress.difficulty === 'hard' ? 3 : 1;
+            sailProgress.stars.set('1', stars);
+            await sailProgress.save();
+            // Send episode 1 embed
+            const embed = new EmbedBuilder()
+              .setColor('Blue')
+              .setDescription(`*I'm Luffy! The Man Who Will Become the Pirate King! - episode 1*
+
+Luffy is found floating at sea by a cruise ship. After repelling an invasion by the Alvida Pirates, he meets a new ally, their chore boy Koby.
+
+**Possible rewards:**
+100 - 250 beli
+1 - 2 C tier chest${sailProgress.difficulty === 'hard' ? '\n1x Koby card\n1x Alvida card (Exclusive to Hard mode)\n1x Heppoko card (Exclusive to Hard mode)\n1x Peppoko card (Exclusive to Hard mode)\n1x Poppoko card (Exclusive to Hard mode)\n1x Alvida Pirates banner blueprint (C rank Item card, signature: alvida pirates, boosts stats by +5%)' : '\n1x Koby card'}${Math.random() < 0.5 ? '\n1 reset token' : ''}`)
+              .setImage('https://files.catbox.moe/zlda8y.webp');
+
+            const buttons = new ActionRowBuilder()
+              .addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`sail_battle:${userId}:ready`)
+                  .setLabel("I'm ready!")
+                  .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                  .setCustomId(`sail:${userId}:map`)
+                  .setLabel('Map')
+                  .setStyle(ButtonStyle.Secondary)
+              );
+
+            await interaction.update({ embeds: [embed], components: [buttons] });
+          } else {
+            await interaction.reply({ content: `Already at Episode ${sailProgress.progress}.`, ephemeral: true });
+          }
+        } else if (subaction === "map") {
+          // Show map
+          const stars = sailProgress.stars.get('1') || 0;
+          const progress = sailProgress.progress;
+          const totalEpisodes = 3;
+          const progressBar = '▰'.repeat(progress) + '▱'.repeat(totalEpisodes - progress);
+
+          const embed = new EmbedBuilder()
+            .setTitle('World Map')
+            .setDescription('View your progress')
+            .addFields(
+              { name: `East blue saga ${progress}/${totalEpisodes}`, value: `home sea\n${progressBar}`, inline: false },
+              { name: `Goat Island${progress >= 1 ? ' ⛓' : ''}`, value: `${stars > 0 ? '★'.repeat(stars) + '\n' : ''}Where Coby and Alvida reside\n\n*page 1/1*`, inline: false }
+            )
+            .setFooter({ text: null, iconURL: 'https://files.catbox.moe/e4w287.webp' });
+
+          await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+        }
+      }
+
+      // Handle sail_battle buttons
+      if (action === "sail_battle") {
+        const userId = ownerId;
+        const subaction = parts[2];
+
+        if (interaction.user.id !== userId) {
+          await interaction.reply({ content: "Only the original requester can use these buttons.", ephemeral: true });
+          return;
+        }
+
+        if (subaction === "ready") {
+          // Start battle
+          const Progress = (await import("../models/Progress.js")).default;
+          const progress = await Progress.findOne({ userId });
+          if (!progress || !progress.team || progress.team.length === 0) {
+            await interaction.reply({ content: "You need a team to sail. Use /team to set your team.", ephemeral: true });
+            return;
+          }
+
+          // Define enemies for phase 1: Heppoko and Peppoko
+          const enemies = [
+            { name: 'Heppoko', health: 70, maxHealth: 70, attackRange: [10,15], power: 10 },
+            { name: 'Peppoko', health: 70, maxHealth: 70, attackRange: [10,15], power: 10 }
+          ];
+
+          const sessionId = `sail_${userId}_${Date.now()}`;
+          global.SAIL_SESSIONS = global.SAIL_SESSIONS || new Map();
+
+          // Get user's cards
+          const WeaponInventory = (await import('../models/WeaponInventory.js')).default;
+          const winv = await WeaponInventory.findOne({ userId });
+          const hasBanner = winv && winv.weapons && Array.from(winv.weapons.values()).some(w => w.id === 'alvida_pirates_banner_c_01');
+          const { computeTeamBoosts } = await import("../lib/boosts.js");
+          const { getCardById } = await import("../cards.js");
+          const { roundNearestFive, roundRangeToFive } = await import("../lib/stats.js");
+
+          function getEquippedWeaponForCard(winv, cardId) {
+            if (!winv || !winv.weapons) return null;
+            if (winv.weapons instanceof Map) {
+              for (const [wid, w] of winv.weapons.entries()) {
+                if (w && w.equippedTo === cardId) {
+                  const wcard = getCardById(wid);
+                  if (wcard) return { id: wid, card: wcard, ...w };
+                }
+              }
+            } else {
+              for (const [wid, w] of Object.entries(winv.weapons || {})) {
+                if (w && w.equippedTo === cardId) {
+                  const wcard = getCardById(wid);
+                  if (wcard) return { id: wid, card: wcard, ...w };
+                }
+              }
+            }
+            return null;
+          }
+
+          const p1TeamBoosts = computeTeamBoosts(progress.team || [], progress.cards || null);
+          const p1Cards = progress.team.map(cardId => {
+            const card = getCardById(cardId);
+            const hasMap = progress.cards && typeof progress.cards.get === 'function';
+            const progressCard = hasMap ? (progress.cards.get(cardId) || { level: 0, xp: 0 }) : (progress.cards[cardId] || { level: 0, xp: 0 });
+            const level = progressCard.level || 0;
+            const mult = 1 + (level * 0.01);
+            let health = Math.round((card.health || 0) * mult);
+            let attackMin = Math.round((card.attackRange?.[0] || 0) * mult);
+            let attackMax = Math.round((card.attackRange?.[1] || 0) * mult);
+            const special = card.specialAttack ? { ...card.specialAttack, range: [(card.specialAttack.range[0] || 0) * mult, (card.specialAttack.range[1] || 0) * mult] } : null;
+            let power = Math.round((card.power || 0) * mult);
+
+            const equipped = getEquippedWeaponForCard(winv, cardId);
+            if (equipped && equipped.card && card.signatureWeapon === equipped.id) {
+              const weaponCard = equipped.card;
+              const weaponLevel = equipped.level || 1;
+              const weaponLevelBoost = (weaponLevel - 1) * 0.01;
+              let sigBoost = 0;
+              if (weaponCard.signatureCards && Array.isArray(weaponCard.signatureCards)) {
+                const idx = weaponCard.signatureCards.indexOf(cardId);
+                if (idx > 0) sigBoost = 0.25;
+              }
+              const totalWeaponBoost = 1 + weaponLevelBoost + sigBoost;
+
+              if (weaponCard.boost) {
+                const atkBoost = Math.round((weaponCard.boost.atk || 0) * totalWeaponBoost);
+                const hpBoost = Math.round((weaponCard.boost.hp || 0) * totalWeaponBoost);
+                power += atkBoost;
+                attackMin += atkBoost;
+                attackMax += atkBoost;
+                health += hpBoost;
+              }
+            }
+
+            if (p1TeamBoosts.atk) {
+              const atkMul = 1 + (p1TeamBoosts.atk / 100);
+              attackMin = Math.round(attackMin * atkMul);
+              attackMax = Math.round(attackMax * atkMul);
+              power = Math.round(power * atkMul);
+            }
+            if (p1TeamBoosts.hp) {
+              const hpMul = 1 + (p1TeamBoosts.hp / 100);
+              health = Math.round(health * hpMul);
+            }
+            if (special && p1TeamBoosts.special) {
+              const spMul = 1 + (p1TeamBoosts.special / 100);
+              special.range = [Math.round(special.range[0] * spMul), Math.round(special.range[1] * spMul)];
+            }
+
+            // Apply banner passive boost
+            const bannerSignature = ['alvida_c_01', 'heppoko_c_01', 'peppoko_c_01', 'poppoko_c_01', 'koby_c_01'];
+            if (hasBanner && bannerSignature.includes(cardId)) {
+              attackMin = Math.round(attackMin * 1.05);
+              attackMax = Math.round(attackMax * 1.05);
+              power = Math.round(power * 1.05);
+              health = Math.round(health * 1.05);
+            }
+
+            const finalPower = roundNearestFive(Math.round(power));
+            const finalAttackMin = roundNearestFive(Math.round(attackMin));
+            const finalAttackMax = roundNearestFive(Math.round(attackMax));
+            const finalHealth = roundNearestFive(Math.round(health));
+            if (special && special.range) special.range = roundRangeToFive([Math.round(special.range[0] || 0), Math.round(special.range[1] || 0)]);
+
+            return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, stamina: 3, usedSpecial: false, attackedLastTurn: false };
+          });
+
+          global.SAIL_SESSIONS.set(sessionId, {
+            userId,
+            user: interaction.user,
+            cards: p1Cards,
+            lifeIndex: 0,
+            enemies,
+            phase: 1,
+            sessionId,
+            channelId: interaction.channel.id,
+            msgId: null
+          });
+
+          await startSailTurn(sessionId, interaction.channel);
+        }
+      }
+
+      // Handle sail_selectchar buttons
+      if (action === "sail_selectchar") {
+        const sessionId = parts[1];
+        const cardIndex = parseInt(parts[2]);
+        const session = global.SAIL_SESSIONS.get(sessionId);
+        if (!session || session.userId !== interaction.user.id) return interaction.reply({ content: "Session not found or not your turn.", ephemeral: true });
+
+        const card = session.cards[cardIndex];
+        if (!card || card.health <= 0 || (card.stamina || 3) <= 0) return interaction.reply({ content: "Invalid card.", ephemeral: true });
+
+        const embed = new EmbedBuilder()
+          .setTitle('Choose Action')
+          .setDescription(`Choose an action for ${card.card.name}.`);
+
+        const attackButton = new ButtonBuilder()
+          .setCustomId(`sail_chooseaction:${sessionId}:${cardIndex}:attack`)
+          .setLabel('Attack')
+          .setStyle(ButtonStyle.Primary);
+
+        const specialButton = new ButtonBuilder()
+          .setCustomId(`sail_chooseaction:${sessionId}:${cardIndex}:special`)
+          .setLabel('Special')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(!card.scaled.specialAttack || (card.stamina ?? 3) < 3 || card.usedSpecial);
+
+        const row = new ActionRowBuilder().addComponents(attackButton, specialButton);
+
+        await interaction.update({ embeds: [embed], components: [row] });
+      }
+
+      // Handle sail_chooseaction buttons
+      if (action === "sail_chooseaction") {
+        const sessionId = parts[1];
+        const cardIndex = parseInt(parts[2]);
+        const actionType = parts[3];
+        const session = global.SAIL_SESSIONS.get(sessionId);
+        if (!session || session.userId !== interaction.user.id) return;
+        const card = session.cards[cardIndex];
+        if (!card) return;
+        if (actionType === 'special') {
+          if (!card.scaled.specialAttack || card.usedSpecial || (card.stamina ?? 3) < 3) return;
+        }
+        const aliveEnemies = session.enemies.filter(e => e.health > 0);
+        if (aliveEnemies.length === 1) {
+          await performSailAttack(session, cardIndex, aliveEnemies[0], actionType, interaction);
+        } else {
+          const embed = new EmbedBuilder()
+            .setTitle('Select Target')
+            .setDescription(`Choose a target for ${card.card.name}'s ${actionType}.`);
+          const targetButtons = aliveEnemies.map((e, idx) =>
+            new ButtonBuilder()
+              .setCustomId(`sail_selecttarget:${sessionId}:${cardIndex}:${actionType}:${session.enemies.indexOf(e)}`)
+              .setLabel(e.name)
+              .setStyle(ButtonStyle.Primary)
+          );
+          const row = new ActionRowBuilder().addComponents(targetButtons);
+          await interaction.update({ embeds: [embed], components: [row] });
+        }
+      }
+
+      // Handle sail_selecttarget buttons
+      if (action === "sail_selecttarget") {
+        const sessionId = parts[1];
+        const cardIndex = parseInt(parts[2]);
+        const actionType = parts[3];
+        const enemyIndex = parseInt(parts[4]);
+        const session = global.SAIL_SESSIONS.get(sessionId);
+        if (!session || session.userId !== interaction.user.id) return;
+        const enemy = session.enemies[enemyIndex];
+        if (!enemy || enemy.health <= 0) return;
+        await performSailAttack(session, cardIndex, enemy, actionType, interaction);
+      }
+
+      // Handle sail_heal buttons
+      if (action === "sail_heal") {
+        const sessionId = parts[1];
+        const session = global.SAIL_SESSIONS.get(sessionId);
+        if (!session || session.userId !== interaction.user.id) return;
+        const Inventory = (await import("../models/Inventory.js")).default;
+        const inventory = await Inventory.findOne({ userId: session.userId }) || new Inventory({ userId: session.userId });
+        const healingItems = ['meat', 'fish', 'sake', 'sea king meat'];
+        const available = healingItems.filter(item => (inventory.items.get(item) || 0) > 0);
+        if (available.length === 0) return interaction.reply({ content: 'No healing items available.', ephemeral: true });
+        const embed = new EmbedBuilder()
+          .setTitle('Select Healing Item')
+          .setDescription('Choose an item to use.');
+        const itemButtons = available.map(item =>
+          new ButtonBuilder()
+            .setCustomId(`sail_heal_item:${sessionId}:${item}`)
+            .setLabel(item)
+            .setStyle(ButtonStyle.Primary)
+        );
+        const row = new ActionRowBuilder().addComponents(itemButtons);
+        await interaction.update({ embeds: [embed], components: [row] });
+      }
+
+      // Handle sail_heal_item buttons
+      if (action === "sail_heal_item") {
+        const sessionId = parts[1];
+        const item = parts[2];
+        const session = global.SAIL_SESSIONS.get(sessionId);
+        if (!session || session.userId !== interaction.user.id) return;
+        const embed = new EmbedBuilder()
+          .setTitle('Select Card to Heal')
+          .setDescription(`Using ${item}. Choose a card to heal.`);
+        const healButtons = session.cards.map((c, idx) =>
+          new ButtonBuilder()
+            .setCustomId(`sail_heal_card:${sessionId}:${item}:${idx}`)
+            .setLabel(c.card.name)
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(c.health <= 0)
+        );
+        const row = new ActionRowBuilder().addComponents(healButtons);
+        await interaction.update({ embeds: [embed], components: [row] });
+      }
+
+      // Handle sail_heal_card buttons
+      if (action === "sail_heal_card") {
+        const sessionId = parts[1];
+        const item = parts[2];
+        const cardIndex = parseInt(parts[3]);
+        const session = global.SAIL_SESSIONS.get(sessionId);
+        if (!session || session.userId !== interaction.user.id) return;
+        const card = session.cards[cardIndex];
+        if (!card || card.health <= 0) return;
+        const isSupport = String(card.card.type).toLowerCase() === 'support';
+        let healPercent;
+        if (item === 'meat') healPercent = isSupport ? 0.05 : 0.1;
+        else if (item === 'fish') healPercent = isSupport ? 0.1 : 0.05;
+        else if (item === 'sake') healPercent = isSupport ? 0.2 : 0.05;
+        else if (item === 'sea king meat') healPercent = isSupport ? 0.05 : 0.2;
+        const healAmount = Math.floor(card.maxHealth * healPercent);
+        const actualHeal = Math.min(healAmount, card.maxHealth - card.health);
+        card.health += actualHeal;
+        session.cards.forEach((c, idx) => {
+          if (idx !== cardIndex && c.health > 0) {
+            c.stamina = Math.max(0, (c.stamina ?? 3) - 1);
+          }
+        });
+        const Inventory = (await import("../models/Inventory.js")).default;
+        const inventory = await Inventory.findOne({ userId: session.userId });
+        if (inventory) {
+          inventory.items.set(item, (inventory.items.get(item) || 0) - 1);
+          await inventory.save();
+        }
+        const healEmbed = new EmbedBuilder()
+          .setTitle('Heal Result')
+          .setDescription(`Healed ${card.card.name} for ${actualHeal} HP! Current HP: ${card.health}/${card.maxHealth}`);
+        await interaction.update({ embeds: [healEmbed], components: [] });
+        setTimeout(async () => {
+          await enemyAttack(session, interaction.channel);
+          await startSailTurn(sessionId, interaction.channel);
+        }, 2000);
       }
 
       // Handle quest view/claim buttons

@@ -11,6 +11,9 @@ const ProgressSchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true },
   cards: { type: Map, of: Object, default: {} },
   team: { type: [String], default: [] },
+  userXp: { type: Number, default: 0 },
+  userLevel: { type: Number, default: 1 },
+  claimedLevel: { type: Number, default: 0 },
 });
 
 export default mongoose.models.Progress || mongoose.model("Progress", ProgressSchema);
