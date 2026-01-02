@@ -1,9 +1,11 @@
 import Progress from "../models/Progress.js";
-import WeaponInventory from "../models/WeaponInventory.js";
-import { getCardById, getRankInfo } from "../cards.js";
+import Balance from "../models/Balance.js";
+import Inventory from "../models/Inventory.js";
+// import WeaponInventory from "../models/WeaponInventory.js";
+import { getCardById, getRankInfo, cards } from "../cards.js";
 import { buildCardEmbed, buildUserCardEmbed } from "../lib/cardEmbed.js";
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, MessageFlags } from "discord.js";
-import { roundNearestFive } from "../lib/stats.js";
+import { roundNearestFive, roundRangeToFive } from "../lib/stats.js";
 
 export const name = "interactionCreate";
 export const once = false;
@@ -25,6 +27,19 @@ function getEvolutionChain(rootCard) {
   }
   walk(rootCard);
   return chain;
+}
+
+function getWeaponById(weaponId) {
+  if (!weaponId) return null;
+  const q = String(weaponId).toLowerCase();
+  let weapon = cards.find((c) => (c.type === "weapon" || c.type === "banner") && c.id.toLowerCase() === q);
+  if (weapon) return weapon;
+  weapon = cards.find((c) => (c.type === "weapon" || c.type === "banner") && c.name.toLowerCase() === q);
+  if (weapon) return weapon;
+  weapon = cards.find((c) => (c.type === "weapon" || c.type === "banner") && c.name.toLowerCase().startsWith(q));
+  if (weapon) return weapon;
+  weapon = cards.find((c) => (c.type === "weapon" || c.type === "banner") && (c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q)));
+  return weapon || null;
 }
 
 export async function execute(interaction, client) {
@@ -71,6 +86,14 @@ export async function execute(interaction, client) {
         await endSailBattle(sessionId, channel, true);
         return;
       }
+      // Apply difficulty boost to new enemies
+      const multiplier = session.difficulty === 'hard' ? 1.5 : session.difficulty === 'medium' ? 1.25 : 1;
+      session.enemies.forEach(enemy => {
+        enemy.health = roundNearestFive(enemy.health * multiplier);
+        enemy.maxHealth = enemy.health;
+        enemy.attackRange = [Math.ceil(enemy.attackRange[0] * multiplier), Math.ceil(enemy.attackRange[1] * multiplier)];
+        enemy.power = Math.ceil(enemy.power * multiplier);
+      });
     }
 
     const embed = new EmbedBuilder()
@@ -121,28 +144,71 @@ export async function execute(interaction, client) {
       const inventory = await Inventory.findOne({ userId: session.userId }) || new Inventory({ userId: session.userId });
       const sailProgress = await SailProgress.findOne({ userId: session.userId }) || new SailProgress({ userId: session.userId });
 
-      // Rewards: 100-250 beli
-      const beli = Math.floor(Math.random() * 151) + 100;
-      balance.balance += beli;
-
-      // 1-2 C chests
-      const chests = Math.floor(Math.random() * 2) + 1;
-      inventory.chests.C += chests;
-
-      // 1 reset token 50%
+      // Handle different episode rewards
+      let rewards = [];
+      let episodeTitle = 'Episode 1';
+      let nextProgress = 2;
       let resetToken = false;
-      if (Math.random() < 0.5) {
-        // Assume reset token is an item
-        if (!inventory.items) inventory.items = new Map();
-        inventory.items.set('reset token', (inventory.items.get('reset token') || 0) + 1);
-        resetToken = true;
+
+      if (session.episode === 2) {
+        episodeTitle = 'Episode 2';
+        nextProgress = 3; // Progress to episode 3 (not implemented yet)
+
+        // Episode 2 rewards: 100-200 beli
+        const beli = Math.floor(Math.random() * 101) + 100;
+        balance.balance += beli;
+
+        // 1-2 C chests
+        const chests = Math.floor(Math.random() * 2) + 1;
+        inventory.chests.C += chests;
+
+        // Cards
+        rewards = ['rika_c_01', 'roronoazoro_c_01'];
+        if (sailProgress.difficulty === 'hard') {
+          rewards.push('helmeppo_c_01');
+          inventory.chests.B += 1; // 1 B chest for hard mode
+        }
+
+        // Special handling for secret stage
+        if (session.secretStage) {
+          // Give 25 levels to Roronoa Zoro card
+          if (progress.cards.has('roronoazoro_c_01')) {
+            let entry = progress.cards.get('roronoazoro_c_01');
+            entry.level = (entry.level || 0) + 25;
+            progress.cards.set('roronoazoro_c_01', entry);
+          } else {
+            progress.cards.set('roronoazoro_c_01', { level: 26, xp: 0, count: 1 });
+          }
+        }
+      } else {
+        // Episode 1 rewards: 100-250 beli
+        const beli = Math.floor(Math.random() * 151) + 100;
+        balance.balance += beli;
+
+        // 1-2 C chests
+        const chests = Math.floor(Math.random() * 2) + 1;
+        inventory.chests.C += chests;
+
+        // 1 reset token 50%
+        if (Math.random() < 0.5) {
+          balance.resetTokens = (balance.resetTokens || 0) + 1;
+          resetToken = true;
+        }
+
+        rewards = ['koby_c_01'];
+        if (sailProgress.difficulty === 'hard') {
+          rewards.push('Alvida_c_01', 'heppoko_c_01', 'Peppoko_c_01', 'Poppoko_c_01');
+        }
+        if (sailProgress.difficulty === 'hard' || sailProgress.difficulty === 'medium') {
+          rewards.push('alvida_pirates_banner_blueprint_c_01');
+        }
       }
 
       // Cards
       const Progress = (await import("../models/Progress.js")).default;
-      const progress = await Progress.findOne({ userId: session.userId });
-      if (!progress) {
-        progress = new Progress({ userId: session.userId, team: [], cards: new Map() });
+      let progress = await Progress.findOne({ userId: session.userId }) || new Progress({ userId: session.userId, team: [], cards: new Map() });
+      if (!progress.cards || typeof progress.cards.get !== 'function') {
+        progress.cards = new Map(Object.entries(progress.cards || {}));
       }
       let weaponInv = await WeaponInventory.findOne({ userId: session.userId });
       if (!weaponInv) {
@@ -150,16 +216,24 @@ export async function execute(interaction, client) {
       }
       if (!progress.cards) progress.cards = new Map();
 
-      // Coby
-      progress.cards.set('koby_c_01', { level: 1, xp: 0, count: 1 });
-      // Hard mode extras
-      if (sailProgress.difficulty === 'hard') {
-        progress.cards.set('Alvida_c_01', { level: 1, xp: 0, count: 1 });
-        progress.cards.set('heppoko_c_01', { level: 1, xp: 0, count: 1 });
-        progress.cards.set('Peppoko_c_01', { level: 1, xp: 0, count: 1 });
-        progress.cards.set('Poppoko_c_01', { level: 1, xp: 0, count: 1 });
-        // Blueprint
-        weaponInv.blueprints['alvida_pirates_banner_blueprint_c_01'] = (weaponInv.blueprints['alvida_pirates_banner_blueprint_c_01'] || 0) + 1;
+      const converted = [];
+      for (const cardId of rewards) {
+        if (progress.cards.has(cardId)) {
+          // Already own, convert to 1 level
+          converted.push(cardId);
+          let entry = progress.cards.get(cardId);
+          let totalXp = (entry.xp || 0) + 100;
+          let newLevel = entry.level || 0;
+          while (totalXp >= 100) {
+            totalXp -= 100;
+            newLevel += 1;
+          }
+          entry.xp = totalXp;
+          entry.level = newLevel;
+          progress.cards.set(cardId, entry);
+        } else {
+          progress.cards.set(cardId, { level: 1, xp: 0, count: 1 });
+        }
       }
 
       await balance.save();
@@ -167,15 +241,49 @@ export async function execute(interaction, client) {
       await weaponInv.save();
       await progress.save();
 
+      // Build rewards text
+      let rewardsText = '';
+      if (session.episode === 2) {
+        const beli = Math.floor(Math.random() * 101) + 100; // 100-200 beli
+        const chests = Math.floor(Math.random() * 2) + 1;
+        rewardsText = `${beli} beli\n${chests} C tier chest${chests > 1 ? 's' : ''}`;
+        if (sailProgress.difficulty === 'hard') {
+          rewardsText += '\n1 B tier chest';
+        }
+      } else {
+        const beli = Math.floor(Math.random() * 151) + 100; // 100-250 beli
+        const chests = Math.floor(Math.random() * 2) + 1;
+        rewardsText = `${beli} beli\n${chests} C tier chest${chests > 1 ? 's' : ''}${resetToken ? '\n1 reset token' : ''}`;
+      }
+
+      for (const cardId of rewards) {
+        const card = getCardById(cardId);
+        const name = card ? card.name : cardId;
+        if (converted.includes(cardId)) {
+          rewardsText += `\n~~1x ${name}~~`;
+        } else {
+          rewardsText += `\n1x ${name}`;
+        }
+      }
+      if (converted.length > 0) {
+        rewardsText += '\n\n' + converted.map(id => {
+          const card = getCardById(id);
+          return `You already own ${card ? card.name : id}, converted to 1 level.`;
+        }).join('\n');
+      }
+      if (session.secretStage) {
+        rewardsText += '\n\n**Secret Stage Bonus:** Roronoa Zoro +25 levels!';
+      }
+
       // Progress to next
-      sailProgress.progress = 2;
+      sailProgress.progress = nextProgress;
       await sailProgress.save();
 
       const embed = new EmbedBuilder()
         .setTitle('Victory!')
-        .setDescription('You completed Episode 1!')
+        .setDescription(`You completed ${episodeTitle}!`)
         .addFields(
-          { name: 'Rewards', value: `${beli} beli\n${chests} C tier chest${chests > 1 ? 's' : ''}${resetToken ? '\n1 reset token' : ''}\n1x Koby card${sailProgress.difficulty === 'hard' ? '\n1x Alvida card\n1x Heppoko card\n1x Peppoko card\n1x Poppoko card\n1x Alvida Pirates banner blueprint' : ''}`, inline: false }
+          { name: 'Rewards', value: rewardsText, inline: false }
         );
 
       await channel.send({ embeds: [embed] });
@@ -404,7 +512,7 @@ export async function execute(interaction, client) {
     if (interaction.isButton()) {
       const id = interaction.customId || "";
       // only handle known prefixes (include shop_ and duel_). Let per-message duel_* collectors handle duel interactions.
-      if (!id.startsWith("info_") && !id.startsWith("collection_") && !id.startsWith("quest_") && !id.startsWith("help_") && !id.startsWith("drop_claim") && !id.startsWith("shop_") && !id.startsWith("duel_") && !id.startsWith("leaderboard_") && !id.startsWith("sail:") && !id.startsWith("sail_battle:") && !id.startsWith("sail_selectchar:") && !id.startsWith("sail_chooseaction:") && !id.startsWith("sail_selecttarget:") && !id.startsWith("sail_heal:") && !id.startsWith("sail_heal_item:") && !id.startsWith("sail_heal_card:")) return;
+      if (!id.startsWith("info_") && !id.startsWith("collection_") && !id.startsWith("quest_") && !id.startsWith("help_") && !id.startsWith("drop_claim") && !id.startsWith("shop_") && !id.startsWith("duel_") && !id.startsWith("leaderboard_") && !id.startsWith("sail:") && !id.startsWith("sail_battle:") && !id.startsWith("sail_battle_ep2:") && !id.startsWith("sail_ep2_choice:") && !id.startsWith("sail_selectchar:") && !id.startsWith("sail_chooseaction:") && !id.startsWith("sail_selecttarget:") && !id.startsWith("sail_heal:") && !id.startsWith("sail_heal_item:") && !id.startsWith("sail_heal_card:")) return;
       // ignore duel_* here so message-level collectors in `commands/duel.js` receive them
       if (id.startsWith("duel_")) return;
 
@@ -634,7 +742,12 @@ export async function execute(interaction, client) {
         const SailProgress = (await import("../models/SailProgress.js")).default;
         const Progress = (await import("../models/Progress.js")).default;
         let sailProgress = await SailProgress.findOne({ userId }) || new SailProgress({ userId });
-        const progress = await Progress.findOne({ userId });
+        let progress = await Progress.findOne({ userId }) || new Progress({ userId, team: [], cards: new Map() });
+
+        // Normalize cards map for consistent access
+        if (!progress.cards || typeof progress.cards.get !== 'function') {
+          progress.cards = new Map(Object.entries(progress.cards || {}));
+        }
 
         if (subaction === "sail") {
           // Progress to next episode
@@ -643,16 +756,11 @@ export async function execute(interaction, client) {
             const stars = sailProgress.difficulty === 'medium' ? 2 : sailProgress.difficulty === 'hard' ? 3 : 1;
             sailProgress.stars.set('1', stars);
             await sailProgress.save();
-            // Send episode 1 embed
+
+            // Send episode 1 embed (include XP info)
             const embed = new EmbedBuilder()
               .setColor('Blue')
-              .setDescription(`*I'm Luffy! The Man Who Will Become the Pirate King! - episode 1*
-
-Luffy is found floating at sea by a cruise ship. After repelling an invasion by the Alvida Pirates, he meets a new ally, their chore boy Koby.
-
-**Possible rewards:**
-100 - 250 beli
-1 - 2 C tier chest${sailProgress.difficulty === 'hard' ? '\n1x Koby card\n1x Alvida card (Exclusive to Hard mode)\n1x Heppoko card (Exclusive to Hard mode)\n1x Peppoko card (Exclusive to Hard mode)\n1x Poppoko card (Exclusive to Hard mode)\n1x Alvida Pirates banner blueprint (C rank Item card, signature: alvida pirates, boosts stats by +5%)' : '\n1x Koby card'}${Math.random() < 0.5 ? '\n1 reset token' : ''}`)
+              .setDescription(`*I'm Luffy! The Man Who Will Become the Pirate King! - episode 1*\n\nLuffy is found floating at sea by a cruise ship. After repelling an invasion by the Alvida Pirates, he meets a new ally, their chore boy Koby.\n\n**Possible rewards:**\n100 - 250 beli\n1 - 2 C tier chest${sailProgress.difficulty === 'hard' ? '\n1x Koby card\n1x Alvida card (Exclusive to Hard mode)\n1x Heppoko card (Exclusive to Hard mode)\n1x Peppoko card (Exclusive to Hard mode)\n1x Poppoko card (Exclusive to Hard mode)\n1x Alvida Pirates banner blueprint (C rank Item card, signature: alvida pirates, boosts stats by +5%)' : '\n1x Koby card'}${Math.random() < 0.5 ? '\n1 reset token' : ''}\n\n*XP awarded: +${xpAmount} to user and each team card.*`)
               .setImage('https://files.catbox.moe/zlda8y.webp');
 
             const buttons = new ActionRowBuilder()
@@ -660,6 +768,32 @@ Luffy is found floating at sea by a cruise ship. After repelling an invasion by 
                 new ButtonBuilder()
                   .setCustomId(`sail_battle:${userId}:ready`)
                   .setLabel("I'm ready!")
+                  .setStyle(ButtonStyle.Primary),
+                new ButtonBuilder()
+                  .setCustomId(`sail:${userId}:map`)
+                  .setLabel('Map')
+                  .setStyle(ButtonStyle.Secondary)
+              );
+
+            await interaction.update({ embeds: [embed], components: [buttons] });
+          } else if (sailProgress.progress === 1) {
+            // Progress from episode 1 to episode 2
+            sailProgress.progress = 2;
+            const stars = sailProgress.difficulty === 'medium' ? 2 : sailProgress.difficulty === 'hard' ? 3 : 1;
+            sailProgress.stars.set('2', stars);
+            await sailProgress.save();
+
+            // Send episode 2 embed
+            const embed = new EmbedBuilder()
+              .setColor('Blue')
+              .setDescription(`*The Great Swordsman Appears! Pirate Hunter Roronoa Zoro - episode 2*\n\nLuffy and Koby find Zoro captured in Shells Town's Marine base, with the Marines intending to execute him. Luffy and Koby work together to retrieve Zoro's katanas, as well as confront the tyrannical Marine Captain Morgan and his son Helmeppo.\n\n**Possible rewards:**\n100 - 200 beli\n1 - 2 C chest\n1x rika card\n1x Roronoa Zoro card\n1x Helmeppo card (Hard mode Exclusive)\n1 B chest (Hard mode Exclusive)\n\n*XP awarded: +${sailProgress.difficulty === 'hard' ? 40 : sailProgress.difficulty === 'medium' ? 30 : 20} to user and each team card.*`)
+              .setImage('https://files.catbox.moe/pdfqe1.webp');
+
+            const buttons = new ActionRowBuilder()
+              .addComponents(
+                new ButtonBuilder()
+                  .setCustomId(`sail_battle_ep2:${userId}:start`)
+                  .setLabel("Sail to Episode 2")
                   .setStyle(ButtonStyle.Primary),
                 new ButtonBuilder()
                   .setCustomId(`sail:${userId}:map`)
@@ -683,7 +817,7 @@ Luffy is found floating at sea by a cruise ship. After repelling an invasion by 
             .setDescription('View your progress')
             .addFields(
               { name: `East blue saga ${progress}/${totalEpisodes}`, value: `home sea\n${progressBar}`, inline: false },
-              { name: `Goat Island${progress >= 1 ? ' ⛓' : ''}`, value: `${stars > 0 ? '★'.repeat(stars) + '\n' : ''}Where Coby and Alvida reside\n\n*page 1/1*`, inline: false }
+              { name: `Goat Island${progress < 1 ? ' ⛓' : ''}`, value: `${stars > 0 ? '★'.repeat(stars) + '\n' : ''}Where Coby and Alvida reside\n\n*page 1/1*`, inline: false }
             )
             .setFooter({ text: null, iconURL: 'https://files.catbox.moe/e4w287.webp' });
 
@@ -716,16 +850,27 @@ Luffy is found floating at sea by a cruise ship. After repelling an invasion by 
             { name: 'Peppoko', health: 70, maxHealth: 70, attackRange: [10,15], power: 10 }
           ];
 
+          // Get difficulty and apply enemy stat boost
+          const SailProgress = (await import("../models/SailProgress.js")).default;
+          const sailProgress = await SailProgress.findOne({ userId });
+          const difficulty = sailProgress?.difficulty || 'easy';
+          const multiplier = difficulty === 'hard' ? 1.5 : difficulty === 'medium' ? 1.25 : 1;
+          enemies.forEach(enemy => {
+            enemy.health = roundNearestFive(enemy.health * multiplier);
+            enemy.maxHealth = enemy.health;
+            enemy.attackRange = [Math.ceil(enemy.attackRange[0] * multiplier), Math.ceil(enemy.attackRange[1] * multiplier)];
+            enemy.power = Math.ceil(enemy.power * multiplier);
+          });
+
           const sessionId = `sail_${userId}_${Date.now()}`;
           global.SAIL_SESSIONS = global.SAIL_SESSIONS || new Map();
 
           // Get user's cards
           const WeaponInventory = (await import('../models/WeaponInventory.js')).default;
           const winv = await WeaponInventory.findOne({ userId });
-          const hasBanner = winv && winv.weapons && Array.from(winv.weapons.values()).some(w => w.id === 'alvida_pirates_banner_c_01');
+          const hasBanner = winv && winv.teamBanner === 'alvida_pirates_banner_c_01';
           const { computeTeamBoosts } = await import("../lib/boosts.js");
           const { getCardById } = await import("../cards.js");
-          const { roundNearestFive, roundRangeToFive } = await import("../lib/stats.js");
 
           function getEquippedWeaponForCard(winv, cardId) {
             if (!winv || !winv.weapons) return null;
@@ -747,7 +892,7 @@ Luffy is found floating at sea by a cruise ship. After repelling an invasion by 
             return null;
           }
 
-          const p1TeamBoosts = computeTeamBoosts(progress.team || [], progress.cards || null);
+          const p1TeamBoosts = computeTeamBoosts(progress.team || [], progress.cards || null, null);
           const p1Cards = progress.team.map(cardId => {
             const card = getCardById(cardId);
             const hasMap = progress.cards && typeof progress.cards.get === 'function';
@@ -798,7 +943,7 @@ Luffy is found floating at sea by a cruise ship. After repelling an invasion by 
             }
 
             // Apply banner passive boost
-            const bannerSignature = ['alvida_c_01', 'heppoko_c_01', 'peppoko_c_01', 'poppoko_c_01', 'koby_c_01'];
+            const bannerSignature = ['Alvida_c_01', 'heppoko_c_01', 'Peppoko_c_01', 'Poppoko_c_01', 'koby_c_01'];
             if (hasBanner && bannerSignature.includes(cardId)) {
               attackMin = Math.round(attackMin * 1.05);
               attackMax = Math.round(attackMax * 1.05);
@@ -824,10 +969,85 @@ Luffy is found floating at sea by a cruise ship. After repelling an invasion by 
             phase: 1,
             sessionId,
             channelId: interaction.channel.id,
-            msgId: null
+            msgId: null,
+            difficulty
           });
 
           await startSailTurn(sessionId, interaction.channel);
+        }
+      }
+
+      // Handle sail_battle_ep2 buttons
+      if (action === "sail_battle_ep2") {
+        const userId = ownerId;
+        const subaction = parts[2];
+
+        if (interaction.user.id !== userId) {
+          await interaction.reply({ content: "Only the original requester can use these buttons.", flags: MessageFlags.Ephemeral });
+          return;
+        }
+
+        if (subaction === "start") {
+          // Start Episode 2: Zoro choice
+          const embed = new EmbedBuilder()
+            .setColor('Blue')
+            .setDescription(`*Stage 1*\n\n**You encounter infamous pirate hunter Zoro, help him ?**\n\n**If yes:**\nObtain 1x Roronoa Zoro card\nMove to stage 2\n-1 Karma\n\n**If no:**\nMove to stage 2\nRandom secret stage\n+1 Karma`)
+            .setImage('https://files.catbox.moe/y6pah3.webp');
+
+          const buttons = new ActionRowBuilder()
+            .addComponents(
+              new ButtonBuilder()
+                .setCustomId(`sail_ep2_choice:${userId}:yes`)
+                .setLabel('Yes')
+                .setStyle(ButtonStyle.Success),
+              new ButtonBuilder()
+                .setCustomId(`sail_ep2_choice:${userId}:no`)
+                .setLabel('No')
+                .setStyle(ButtonStyle.Danger)
+            );
+
+          await interaction.update({ embeds: [embed], components: [buttons] });
+        }
+      }
+
+      // Handle sail_ep2_choice buttons
+      if (action === "sail_ep2_choice") {
+        const userId = ownerId;
+        const choice = parts[2];
+
+        if (interaction.user.id !== userId) {
+          await interaction.reply({ content: "Only the original requester can use these buttons.", flags: MessageFlags.Ephemeral });
+          return;
+        }
+
+        const Progress = (await import("../models/Progress.js")).default;
+        const progress = await Progress.findOne({ userId });
+
+        if (choice === "yes") {
+          // Help Zoro: get Zoro card, -1 karma, move to stage 2
+          progress.karma = (progress.karma || 0) - 1;
+          await progress.save();
+
+          // Add Zoro card to inventory
+          const Inventory = (await import("../models/Inventory.js")).default;
+          const inventory = await Inventory.findOne({ userId }) || new Inventory({ userId });
+          inventory.cards = inventory.cards || {};
+          inventory.cards['RoronoaZoro_c_01'] = (inventory.cards['RoronoaZoro_c_01'] || 0) + 1;
+          await inventory.save();
+
+          // Start Stage 2 battle
+          await startEpisode2Stage2(userId, interaction, true);
+        } else {
+          // Don't help Zoro: +1 karma, random secret stage
+          progress.karma = (progress.karma || 0) + 1;
+          await progress.save();
+
+          // 50% chance for secret Zoro fight
+          if (Math.random() < 0.5) {
+            await startEpisode2SecretStage(userId, interaction);
+          } else {
+            await startEpisode2Stage2(userId, interaction, false);
+          }
         }
       }
 
@@ -1270,6 +1490,7 @@ Luffy is found floating at sea by a cruise ship. After repelling an invasion by 
 
         // fetch progress to check ownership
         const progDoc = await Progress.findOne({ userId });
+        
         const cardsMap = progDoc ? (progDoc.cards instanceof Map ? progDoc.cards : new Map(Object.entries(progDoc.cards || {}))) : new Map();
         let ownedEntry = null;
         
@@ -1285,6 +1506,7 @@ Luffy is found floating at sea by a cruise ship. After repelling an invasion by 
             }
           }
         }
+        
 
         // Check if user owns the card
         if (!ownedEntry || (ownedEntry.count || 0) <= 0) {
@@ -1608,6 +1830,74 @@ Luffy is found floating at sea by a cruise ship. After repelling an invasion by 
         await interaction.update({ embeds: [embed], components: [sortRow, row] });
         return;
       }
+
+      // Handle craft_craft buttons
+      if (action === "craft_craft") {
+        const weaponId = parts[1];
+        const userId = ownerId;
+
+        if (interaction.user.id !== userId) {
+          await interaction.reply({ content: "Only the original requester can use these buttons.", ephemeral: true });
+          return;
+        }
+
+        const weapon = getWeaponById(weaponId);
+        if (!weapon) {
+          await interaction.reply({ content: "Weapon not found.", ephemeral: true });
+          return;
+        }
+
+        const Progress = (await import("../models/Progress.js")).default;
+        const progress = await Progress.findOne({ userId });
+        if (!progress || !progress.cards || !progress.cards.get(weaponId)) {
+          await interaction.reply({ content: "You don't have the blueprint for this weapon.", ephemeral: true });
+          return;
+        }
+
+        const blueprintEntry = progress.cards.get(weaponId);
+        if ((blueprintEntry.count || 0) <= 0) {
+          await interaction.reply({ content: "You don't have the blueprint for this weapon.", ephemeral: true });
+          return;
+        }
+
+        // Check materials
+        const Inventory = (await import("../models/Inventory.js")).default;
+        const inventory = await Inventory.findOne({ userId }) || new Inventory({ userId, items: new Map(), chests: { C:0, B:0, A:0, S:0 }, xpBottles: 0 });
+        const requiredMaterials = weapon.materials || {};
+        const missing = [];
+        for (const [mat, qty] of Object.entries(requiredMaterials)) {
+          const has = inventory.items.get(mat) || 0;
+          if (has < qty) missing.push(`${mat} (${has}/${qty})`);
+        }
+        if (missing.length > 0) {
+          await interaction.reply({ content: `Missing materials: ${missing.join(', ')}.`, ephemeral: true });
+          return;
+        }
+
+        // Deduct materials
+        for (const [mat, qty] of Object.entries(requiredMaterials)) {
+          inventory.items.set(mat, (inventory.items.get(mat) || 0) - qty);
+        }
+        await inventory.save();
+
+        // Remove blueprint
+        blueprintEntry.count -= 1;
+        if (blueprintEntry.count <= 0) {
+          progress.cards.delete(weaponId);
+        }
+        await progress.save();
+
+        // Add weapon to inventory
+        const WeaponInventory = (await import("../models/WeaponInventory.js")).default;
+        let winv = await WeaponInventory.findOne({ userId }) || new WeaponInventory({ userId, weapons: new Map() });
+        if (!winv.weapons) winv.weapons = new Map();
+        const existing = winv.weapons.get(weaponId) || { count: 0, equippedTo: null, teamBanner: null };
+        existing.count += 1;
+        winv.weapons.set(weaponId, existing);
+        await winv.save();
+
+        await interaction.reply({ content: `Successfully crafted ${weapon.name}!`, ephemeral: true });
+      }
     }
   } catch (err) {
     console.error("Error handling button interaction:", err);
@@ -1635,3 +1925,466 @@ Luffy is found floating at sea by a cruise ship. After repelling an invasion by 
     }
   }
 }
+
+// Episode 2 helper functions
+async function startEpisode2Stage2(userId, interaction, helpedZoro) {
+  const Progress = (await import("../models/Progress.js")).default;
+  const progress = await Progress.findOne({ userId });
+  if (!progress || !progress.team || progress.team.length === 0) {
+    await interaction.reply({ content: "You need a team to sail. Use /team to set your team.", ephemeral: true });
+    return;
+  }
+
+  // Define enemies for Stage 2: Helmeppo and 3 random marines
+  const enemies = [
+    { name: 'Helmeppo', health: 70, maxHealth: 70, attackRange: [5, 15], power: 10 },
+    { name: 'Marine', health: 50, maxHealth: 50, attackRange: [5, 10], power: 8 },
+    { name: 'Marine', health: 50, maxHealth: 50, attackRange: [5, 10], power: 8 },
+    { name: 'Marine', health: 50, maxHealth: 50, attackRange: [5, 10], power: 8 }
+  ];
+
+  // Get difficulty and apply enemy stat boost
+  const SailProgress = (await import("../models/SailProgress.js")).default;
+  const sailProgress = await SailProgress.findOne({ userId });
+  const difficulty = sailProgress?.difficulty || 'easy';
+  const multiplier = difficulty === 'hard' ? 1.5 : difficulty === 'medium' ? 1.25 : 1;
+  enemies.forEach(enemy => {
+    enemy.health = roundNearestFive(enemy.health * multiplier);
+    enemy.maxHealth = enemy.health;
+    enemy.attackRange = [Math.ceil(enemy.attackRange[0] * multiplier), Math.ceil(enemy.attackRange[1] * multiplier)];
+    enemy.power = Math.ceil(enemy.power * multiplier);
+  });
+
+  const sessionId = `sail_ep2_${userId}_${Date.now()}`;
+  global.SAIL_SESSIONS = global.SAIL_SESSIONS || new Map();
+
+  // Get user's cards with boosts
+  const WeaponInventory = (await import('../models/WeaponInventory.js')).default;
+  const winv = await WeaponInventory.findOne({ userId });
+  const hasBanner = winv && winv.teamBanner === 'alvida_pirates_banner_c_01';
+  const { computeTeamBoosts } = await import("../lib/boosts.js");
+  const { getCardById } = await import("../cards.js");
+
+  const p1TeamBoosts = computeTeamBoosts(progress.team || [], progress.cards || null, winv);
+  const p1Cards = progress.team.map(cardId => {
+    const card = getCardById(cardId);
+    const hasMap = progress.cards && typeof progress.cards.get === 'function';
+    const progressCard = hasMap ? (progress.cards.get(cardId) || { level: 0, xp: 0 }) : (progress.cards[cardId] || { level: 0, xp: 0 });
+    const level = progressCard.level || 0;
+    const mult = 1 + (level * 0.01);
+    let health = Math.round((card.health || 0) * mult);
+    let attackMin = Math.round((card.attackRange?.[0] || 0) * mult);
+    let attackMax = Math.round((card.attackRange?.[1] || 0) * mult);
+    const special = card.specialAttack ? { ...card.specialAttack, range: [(card.specialAttack.range[0] || 0) * mult, (card.specialAttack.range[1] || 0) * mult] } : null;
+    let power = Math.round((card.power || 0) * mult);
+
+    // Apply team boosts
+    if (p1TeamBoosts.atk) {
+      const atkMul = 1 + (p1TeamBoosts.atk / 100);
+      attackMin = Math.round(attackMin * atkMul);
+      attackMax = Math.round(attackMax * atkMul);
+    }
+    if (p1TeamBoosts.hp) {
+      const hpMul = 1 + (p1TeamBoosts.hp / 100);
+      health = Math.round(health * hpMul);
+    }
+    if (special && p1TeamBoosts.special) {
+      const spMul = 1 + (p1TeamBoosts.special / 100);
+      special.range = [Math.round(special.range[0] * spMul), Math.round(special.range[1] * spMul)];
+    }
+
+    // Apply banner passive boost
+    const bannerSignature = ['Alvida_c_01', 'heppoko_c_01', 'Peppoko_c_01', 'Poppoko_c_01', 'koby_c_01'];
+    if (hasBanner && bannerSignature.includes(cardId)) {
+      attackMin = Math.round(attackMin * 1.05);
+      attackMax = Math.round(attackMax * 1.05);
+      power = Math.round(power * 1.05);
+      health = Math.round(health * 1.05);
+    }
+
+    const finalPower = roundNearestFive(Math.round(power));
+    const finalAttackMin = roundNearestFive(Math.round(attackMin));
+    const finalAttackMax = roundNearestFive(Math.round(attackMax));
+    const finalHealth = roundNearestFive(Math.round(health));
+    if (special && special.range) special.range = roundRangeToFive([Math.round(special.range[0] || 0), Math.round(special.range[1] || 0)]);
+
+    return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, stamina: 3, usedSpecial: false, attackedLastTurn: false };
+  });
+
+  global.SAIL_SESSIONS.set(sessionId, {
+    userId,
+    user: interaction.user,
+    cards: p1Cards,
+    lifeIndex: 0,
+    enemies,
+    phase: 1,
+    sessionId,
+    channelId: interaction.channel.id,
+    msgId: null,
+    difficulty,
+    episode: 2,
+    helpedZoro
+  });
+
+  await startSailTurn(sessionId, interaction.channel);
+}
+
+async function startEpisode2SecretStage(userId, interaction) {
+  // Secret stage: Fight with Zoro
+  const Progress = (await import("../models/Progress.js")).default;
+  const progress = await Progress.findOne({ userId });
+  if (!progress || !progress.team || progress.team.length === 0) {
+    await interaction.reply({ content: "You need a team to sail. Use /team to set your team.", ephemeral: true });
+    return;
+  }
+
+  // Zoro enemy
+  const enemies = [
+    { name: 'Roronoa Zoro', health: 210, maxHealth: 210, attackRange: [25, 50], power: 35, specialAttack: { name: "Oni Giri", range: [85, 135] }, usedSpecial: false }
+  ];
+
+  const sessionId = `sail_ep2_secret_${userId}_${Date.now()}`;
+  global.SAIL_SESSIONS = global.SAIL_SESSIONS || new Map();
+
+  // Get user's cards with boosts
+  const WeaponInventory = (await import('../models/WeaponInventory.js')).default;
+  const winv = await WeaponInventory.findOne({ userId });
+  const hasBanner = winv && winv.teamBanner === 'alvida_pirates_banner_c_01';
+  const { computeTeamBoosts } = await import("../lib/boosts.js");
+  const { getCardById } = await import("../cards.js");
+
+  const p1TeamBoosts = computeTeamBoosts(progress.team || [], progress.cards || null, winv);
+  const p1Cards = progress.team.map(cardId => {
+    const card = getCardById(cardId);
+    const hasMap = progress.cards && typeof progress.cards.get === 'function';
+    const progressCard = hasMap ? (progress.cards.get(cardId) || { level: 0, xp: 0 }) : (progress.cards[cardId] || { level: 0, xp: 0 });
+    const level = progressCard.level || 0;
+    const mult = 1 + (level * 0.01);
+    let health = Math.round((card.health || 0) * mult);
+    let attackMin = Math.round((card.attackRange?.[0] || 0) * mult);
+    let attackMax = Math.round((card.attackRange?.[1] || 0) * mult);
+    const special = card.specialAttack ? { ...card.specialAttack, range: [(card.specialAttack.range[0] || 0) * mult, (card.specialAttack.range[1] || 0) * mult] } : null;
+    let power = Math.round((card.power || 0) * mult);
+
+    // Apply team boosts
+    if (p1TeamBoosts.atk) {
+      const atkMul = 1 + (p1TeamBoosts.atk / 100);
+      attackMin = Math.round(attackMin * atkMul);
+      attackMax = Math.round(attackMax * atkMul);
+    }
+    if (p1TeamBoosts.hp) {
+      const hpMul = 1 + (p1TeamBoosts.hp / 100);
+      health = Math.round(health * hpMul);
+    }
+    if (special && p1TeamBoosts.special) {
+      const spMul = 1 + (p1TeamBoosts.special / 100);
+      special.range = [Math.round(special.range[0] * spMul), Math.round(special.range[1] * spMul)];
+    }
+
+    // Apply banner passive boost
+    const bannerSignature = ['Alvida_c_01', 'heppoko_c_01', 'Peppoko_c_01', 'Poppoko_c_01', 'koby_c_01'];
+    if (hasBanner && bannerSignature.includes(cardId)) {
+      attackMin = Math.round(attackMin * 1.05);
+      attackMax = Math.round(attackMax * 1.05);
+      power = Math.round(power * 1.05);
+      health = Math.round(health * 1.05);
+    }
+
+    const finalPower = roundNearestFive(Math.round(power));
+    const finalAttackMin = roundNearestFive(Math.round(attackMin));
+    const finalAttackMax = roundNearestFive(Math.round(attackMax));
+    const finalHealth = roundNearestFive(Math.round(health));
+    if (special && special.range) special.range = roundRangeToFive([Math.round(special.range[0] || 0), Math.round(special.range[1] || 0)]);
+
+    return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, stamina: 3, usedSpecial: false, attackedLastTurn: false };
+  });
+
+  global.SAIL_SESSIONS.set(sessionId, {
+    userId,
+    user: interaction.user,
+    cards: p1Cards,
+    lifeIndex: 0,
+    enemies,
+    phase: 1,
+    sessionId,
+    channelId: interaction.channel.id,
+    msgId: null,
+    difficulty: 'hard', // Secret stage is always hard
+    episode: 2,
+    secretStage: true
+  });
+
+  await startSailTurn(sessionId, interaction.channel);
+}
+
+const startEpisode2Stage2 = async (userId, interaction, hasZoro) => {
+  const Progress = (await import("../models/Progress.js")).default;
+  const progress = await Progress.findOne({ userId });
+  if (!progress || !progress.team || progress.team.length === 0) {
+    await interaction.reply({ content: "You need a team to sail. Use /team to set your team.", flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  // Define enemies for Episode 2 Stage 2: Helmeppo and Marines
+  const enemies = [
+    { name: 'Helmeppo', health: 80, maxHealth: 80, attackRange: [12,18], power: 12 },
+    { name: 'Marine', health: 60, maxHealth: 60, attackRange: [8,12], power: 8 },
+    { name: 'Marine', health: 60, maxHealth: 60, attackRange: [8,12], power: 8 }
+  ];
+
+  // Get difficulty and apply enemy stat boost
+  const SailProgress = (await import("../models/SailProgress.js")).default;
+  const sailProgress = await SailProgress.findOne({ userId });
+  const difficulty = sailProgress?.difficulty || 'easy';
+  const multiplier = difficulty === 'hard' ? 1.5 : difficulty === 'medium' ? 1.25 : 1;
+  enemies.forEach(enemy => {
+    enemy.health = roundNearestFive(enemy.health * multiplier);
+    enemy.maxHealth = enemy.health;
+    enemy.attackRange = [Math.ceil(enemy.attackRange[0] * multiplier), Math.ceil(enemy.attackRange[1] * multiplier)];
+    enemy.power = Math.ceil(enemy.power * multiplier);
+  });
+
+  const sessionId = `sail_ep2_${userId}_${Date.now()}`;
+  global.SAIL_SESSIONS = global.SAIL_SESSIONS || new Map();
+
+  // Get user's cards
+  const WeaponInventory = (await import('../models/WeaponInventory.js')).default;
+  const winv = await WeaponInventory.findOne({ userId });
+  const hasBanner = winv && winv.teamBanner === 'alvida_pirates_banner_c_01';
+  const { computeTeamBoosts } = await import("../lib/boosts.js");
+  const { getCardById } = await import("../cards.js");
+
+  function getEquippedWeaponForCard(winv, cardId) {
+    if (!winv || !winv.weapons) return null;
+    if (winv.weapons instanceof Map) {
+      for (const [wid, w] of winv.weapons.entries()) {
+        if (w && w.equippedTo === cardId) {
+          const wcard = getCardById(wid);
+          if (wcard) return { id: wid, card: wcard, ...w };
+        }
+      }
+    } else {
+      for (const [wid, w] of Object.entries(winv.weapons || {})) {
+        if (w && w.equippedTo === cardId) {
+          const wcard = getCardById(wid);
+          if (wcard) return { id: wid, card: wcard, ...w };
+        }
+      }
+    }
+    return null;
+  }
+
+  const p1TeamBoosts = computeTeamBoosts(progress.team || [], progress.cards || null, null);
+  const p1Cards = progress.team.map(cardId => {
+    const card = getCardById(cardId);
+    const hasMap = progress.cards && typeof progress.cards.get === 'function';
+    const progressCard = hasMap ? (progress.cards.get(cardId) || { level: 0, xp: 0 }) : (progress.cards[cardId] || { level: 0, xp: 0 });
+    const level = progressCard.level || 0;
+    const mult = 1 + (level * 0.01);
+    let health = Math.round((card.health || 0) * mult);
+    let attackMin = Math.round((card.attackRange?.[0] || 0) * mult);
+    let attackMax = Math.round((card.attackRange?.[1] || 0) * mult);
+    const special = card.specialAttack ? { ...card.specialAttack, range: [(card.specialAttack.range[0] || 0) * mult, (card.specialAttack.range[1] || 0) * mult] } : null;
+    let power = Math.round((card.power || 0) * mult);
+
+    const equipped = getEquippedWeaponForCard(winv, cardId);
+    if (equipped && equipped.card && card.signatureWeapon === equipped.id) {
+      const weaponCard = equipped.card;
+      const weaponLevel = equipped.level || 1;
+      const weaponLevelBoost = (weaponLevel - 1) * 0.01;
+      let sigBoost = 0;
+      if (weaponCard.signatureCards && Array.isArray(weaponCard.signatureCards)) {
+        const idx = weaponCard.signatureCards.indexOf(cardId);
+        if (idx > 0) sigBoost = 0.25;
+      }
+      const totalWeaponBoost = 1 + weaponLevelBoost + sigBoost;
+
+      if (weaponCard.boost) {
+        const atkBoost = Math.round((weaponCard.boost.atk || 0) * totalWeaponBoost);
+        const hpBoost = Math.round((weaponCard.boost.hp || 0) * totalWeaponBoost);
+        power += atkBoost;
+        attackMin += atkBoost;
+        attackMax += atkBoost;
+        health += hpBoost;
+      }
+    }
+
+    if (p1TeamBoosts.atk) {
+      const atkMul = 1 + (p1TeamBoosts.atk / 100);
+      attackMin = Math.round(attackMin * atkMul);
+      attackMax = Math.round(attackMax * atkMul);
+      power = Math.round(power * atkMul);
+    }
+    if (p1TeamBoosts.hp) {
+      const hpMul = 1 + (p1TeamBoosts.hp / 100);
+      health = Math.round(health * hpMul);
+    }
+    if (special && p1TeamBoosts.special) {
+      const spMul = 1 + (p1TeamBoosts.special / 100);
+      special.range = [Math.round(special.range[0] * spMul), Math.round(special.range[1] * spMul)];
+    }
+
+    // Apply banner passive boost
+    const bannerSignature = ['Alvida_c_01', 'heppoko_c_01', 'Peppoko_c_01', 'Poppoko_c_01', 'koby_c_01'];
+    if (hasBanner && bannerSignature.includes(cardId)) {
+      attackMin = Math.round(attackMin * 1.05);
+      attackMax = Math.round(attackMax * 1.05);
+      power = Math.round(power * 1.05);
+      health = Math.round(health * 1.05);
+    }
+
+    const finalPower = roundNearestFive(Math.round(power));
+    const finalAttackMin = roundNearestFive(Math.round(attackMin));
+    const finalAttackMax = roundNearestFive(Math.round(attackMax));
+    const finalHealth = roundNearestFive(Math.round(health));
+    if (special && special.range) special.range = roundRangeToFive([Math.round(special.range[0] || 0), Math.round(special.range[1] || 0)]);
+
+    return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, stamina: 3, usedSpecial: false, attackedLastTurn: false };
+  });
+
+  global.SAIL_SESSIONS.set(sessionId, {
+    userId,
+    user: interaction.user,
+    cards: p1Cards,
+    lifeIndex: 0,
+    enemies,
+    phase: 1,
+    sessionId,
+    channelId: interaction.channel.id,
+    msgId: null,
+    difficulty,
+    episode: 2,
+    hasZoro
+  });
+
+  await startSailTurn(sessionId, interaction.channel);
+};
+
+const startEpisode2SecretStage = async (userId, interaction) => {
+  const Progress = (await import("../models/Progress.js")).default;
+  const progress = await Progress.findOne({ userId });
+  if (!progress || !progress.team || progress.team.length === 0) {
+    await interaction.reply({ content: "You need a team to sail. Use /team to set your team.", flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  // Define enemies for Episode 2 Secret Stage: Zoro
+  const enemies = [
+    { name: 'Roronoa Zoro', health: 150, maxHealth: 150, attackRange: [20,30], power: 25 }
+  ];
+
+  const sessionId = `sail_ep2_secret_${userId}_${Date.now()}`;
+  global.SAIL_SESSIONS = global.SAIL_SESSIONS || new Map();
+
+  // Get user's cards
+  const WeaponInventory = (await import('../models/WeaponInventory.js')).default;
+  const winv = await WeaponInventory.findOne({ userId });
+  const hasBanner = winv && winv.teamBanner === 'alvida_pirates_banner_c_01';
+  const { computeTeamBoosts } = await import("../lib/boosts.js");
+  const { getCardById } = await import("../cards.js");
+
+  function getEquippedWeaponForCard(winv, cardId) {
+    if (!winv || !winv.weapons) return null;
+    if (winv.weapons instanceof Map) {
+      for (const [wid, w] of winv.weapons.entries()) {
+        if (w && w.equippedTo === cardId) {
+          const wcard = getCardById(wid);
+          if (wcard) return { id: wid, card: wcard, ...w };
+        }
+      }
+    } else {
+      for (const [wid, w] of Object.entries(winv.weapons || {})) {
+        if (w && w.equippedTo === cardId) {
+          const wcard = getCardById(wid);
+          if (wcard) return { id: wid, card: wcard, ...w };
+        }
+      }
+    }
+    return null;
+  }
+
+  const p1TeamBoosts = computeTeamBoosts(progress.team || [], progress.cards || null, null);
+  const p1Cards = progress.team.map(cardId => {
+    const card = getCardById(cardId);
+    const hasMap = progress.cards && typeof progress.cards.get === 'function';
+    const progressCard = hasMap ? (progress.cards.get(cardId) || { level: 0, xp: 0 }) : (progress.cards[cardId] || { level: 0, xp: 0 });
+    const level = progressCard.level || 0;
+    const mult = 1 + (level * 0.01);
+    let health = Math.round((card.health || 0) * mult);
+    let attackMin = Math.round((card.attackRange?.[0] || 0) * mult);
+    let attackMax = Math.round((card.attackRange?.[1] || 0) * mult);
+    const special = card.specialAttack ? { ...card.specialAttack, range: [(card.specialAttack.range[0] || 0) * mult, (card.specialAttack.range[1] || 0) * mult] } : null;
+    let power = Math.round((card.power || 0) * mult);
+
+    const equipped = getEquippedWeaponForCard(winv, cardId);
+    if (equipped && equipped.card && card.signatureWeapon === equipped.id) {
+      const weaponCard = equipped.card;
+      const weaponLevel = equipped.level || 1;
+      const weaponLevelBoost = (weaponLevel - 1) * 0.01;
+      let sigBoost = 0;
+      if (weaponCard.signatureCards && Array.isArray(weaponCard.signatureCards)) {
+        const idx = weaponCard.signatureCards.indexOf(cardId);
+        if (idx > 0) sigBoost = 0.25;
+      }
+      const totalWeaponBoost = 1 + weaponLevelBoost + sigBoost;
+
+      if (weaponCard.boost) {
+        const atkBoost = Math.round((weaponCard.boost.atk || 0) * totalWeaponBoost);
+        const hpBoost = Math.round((weaponCard.boost.hp || 0) * totalWeaponBoost);
+        power += atkBoost;
+        attackMin += atkBoost;
+        attackMax += atkBoost;
+        health += hpBoost;
+      }
+    }
+
+    if (p1TeamBoosts.atk) {
+      const atkMul = 1 + (p1TeamBoosts.atk / 100);
+      attackMin = Math.round(attackMin * atkMul);
+      attackMax = Math.round(attackMax * atkMul);
+      power = Math.round(power * atkMul);
+    }
+    if (p1TeamBoosts.hp) {
+      const hpMul = 1 + (p1TeamBoosts.hp / 100);
+      health = Math.round(health * hpMul);
+    }
+    if (special && p1TeamBoosts.special) {
+      const spMul = 1 + (p1TeamBoosts.special / 100);
+      special.range = [Math.round(special.range[0] * spMul), Math.round(special.range[1] * spMul)];
+    }
+
+    // Apply banner passive boost
+    const bannerSignature = ['Alvida_c_01', 'heppoko_c_01', 'Peppoko_c_01', 'Poppoko_c_01', 'koby_c_01'];
+    if (hasBanner && bannerSignature.includes(cardId)) {
+      attackMin = Math.round(attackMin * 1.05);
+      attackMax = Math.round(attackMax * 1.05);
+      power = Math.round(power * 1.05);
+      health = Math.round(health * 1.05);
+    }
+
+    const finalPower = roundNearestFive(Math.round(power));
+    const finalAttackMin = roundNearestFive(Math.round(attackMin));
+    const finalAttackMax = roundNearestFive(Math.round(attackMax));
+    const finalHealth = roundNearestFive(Math.round(health));
+    if (special && special.range) special.range = roundRangeToFive([Math.round(special.range[0] || 0), Math.round(special.range[1] || 0)]);
+
+    return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, stamina: 3, usedSpecial: false, attackedLastTurn: false };
+  });
+
+  global.SAIL_SESSIONS.set(sessionId, {
+    userId,
+    user: interaction.user,
+    cards: p1Cards,
+    lifeIndex: 0,
+    enemies,
+    phase: 1,
+    sessionId,
+    channelId: interaction.channel.id,
+    msgId: null,
+    difficulty: 'hard', // Secret stage is always hard
+    episode: 2,
+    secretStage: true
+  });
+
+  await startSailTurn(sessionId, interaction.channel);
+};

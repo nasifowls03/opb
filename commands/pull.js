@@ -124,6 +124,23 @@ export async function execute(interactionOrMessage, client) {
   const total = pullDoc.totalPulls || 0;
   const cyclePos = (total % 100) === 0 ? 100 : (total % 100);
 
+  // Get user's karma to modify probabilities
+  let progDoc = await Progress.findOne({ userId });
+  if (!progDoc) {
+    progDoc = new Progress({ userId, cards: {} });
+  }
+  const karma = progDoc.karma || 0;
+
+  // Modify probabilities based on karma (higher karma = worse odds)
+  let adjustedProbabilities = { ...PULL_PROBABILITIES };
+  if (karma > 0) {
+    // Bad karma reduces S and A rates, increases C rate
+    const karmaPenalty = Math.min(karma * 0.1, 0.5); // Max 50% penalty
+    adjustedProbabilities.S = Math.max(0.1, PULL_PROBABILITIES.S * (1 - karmaPenalty));
+    adjustedProbabilities.A = Math.max(1, PULL_PROBABILITIES.A * (1 - karmaPenalty * 0.5));
+    adjustedProbabilities.C = PULL_PROBABILITIES.C + (PULL_PROBABILITIES.S - adjustedProbabilities.S) + (PULL_PROBABILITIES.A - adjustedProbabilities.A) * 0.5;
+  }
+
   // guarantee S card on every 100th pull
   let pulled = null;
   if (cyclePos === 100) {
@@ -131,13 +148,7 @@ export async function execute(interactionOrMessage, client) {
     const sPool = cards.filter((c) => !c.isUpgrade && c.rank && String(c.rank).toUpperCase() === "S");
     if (sPool.length > 0) pulled = sPool[Math.floor(Math.random() * sPool.length)];
   }
-  if (!pulled) pulled = getRandomCardByProbability(PULL_PROBABILITIES);
-
-  // ensure user's progress document
-  let progDoc = await Progress.findOne({ userId });
-  if (!progDoc) {
-    progDoc = new Progress({ userId, cards: {} });
-  }
+  if (!pulled) pulled = getRandomCardByProbability(adjustedProbabilities);
 
   // progDoc.cards may be a Mongoose Map or a plain object; normalize to a Map
   let userCardsMap;

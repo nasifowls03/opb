@@ -80,6 +80,7 @@ export async function execute(interactionOrMessage, client) {
   // fetch progress to check ownership
   const progDoc = await Progress.findOne({ userId });
   const cardsMap = progDoc ? (progDoc.cards instanceof Map ? progDoc.cards : new Map(Object.entries(progDoc.cards || {}))) : new Map();
+  
   // robust ownership lookup: try exact key, lowercase key, and substring matches
   let ownedEntry = null;
   if (cardsMap instanceof Map) {
@@ -103,6 +104,15 @@ export async function execute(interactionOrMessage, client) {
       }
     }
   }
+
+  // For blueprints, check progress.cards
+  if (card.type === "item" && card.craftingRequirements) {
+    const entry = cardsMap.get(card.id);
+    if (entry && entry.count > 0) {
+      ownedEntry = entry;
+    }
+  }
+  
 
   // If multiple upgrade variants share the same name and the user owns a higher one,
   // prefer showing the highest owned variant when the query is ambiguous (e.g., "nami").
@@ -128,7 +138,7 @@ export async function execute(interactionOrMessage, client) {
   }
 
   // If the target is a weapon, show its weapon-specific embed (user-specific if crafted)
-  if (card.type && String(card.type).toLowerCase() === "weapon") {
+  if (card.type && String(card.type).toLowerCase() === "weapon" || String(card.type).toLowerCase() === "banner") {
     const winv = await WeaponInventory.findOne({ userId });
     const userWeapon = winv ? (winv.weapons instanceof Map ? winv.weapons.get(card.id) : winv.weapons?.[card.id]) : null;
     
@@ -139,24 +149,25 @@ export async function execute(interactionOrMessage, client) {
       if (isInteraction) await interactionOrMessage.reply({ content: reply, ephemeral: true }); else await channel.send(reply);
       return;
     }
+    weaponEmbed.addFields({ name: 'Owned', value: userWeapon ? 'Yes' : 'No', inline: true });
     // Build buttons: allow viewing user stats if player crafted this weapon
     const rows = [];
-    const buttons = [];
-    buttons.push(
-      new (await import("discord.js")).ButtonBuilder()
-        .setCustomId(`info_weaponbase:${userId}:${card.id}`)
-        .setLabel("Base Stats")
-        .setStyle((await import("discord.js")).ButtonStyle.Secondary)
-    );
     if (userWeapon) {
+      const buttons = [];
+      buttons.push(
+        new (await import("discord.js")).ButtonBuilder()
+          .setCustomId(`info_weaponbase:${userId}:${card.id}`)
+          .setLabel("Base Stats")
+          .setStyle((await import("discord.js")).ButtonStyle.Secondary)
+      );
       buttons.push(
         new (await import("discord.js")).ButtonBuilder()
           .setCustomId(`info_userweapon:${userId}:${card.id}`)
           .setLabel("👤")
           .setStyle((await import("discord.js")).ButtonStyle.Secondary)
       );
+      rows.push(new (await import("discord.js")).ActionRowBuilder().addComponents(...buttons));
     }
-    rows.push(new (await import("discord.js")).ActionRowBuilder().addComponents(...buttons));
 
     // If user doesn't own the crafted weapon, keep embed greyed
     if (!userWeapon) weaponEmbed.setColor(0x2f3136);
@@ -229,7 +240,7 @@ export async function execute(interactionOrMessage, client) {
   
   // Create buttons row with Previous/Next and User Stats button
   const buttons = [];
-  if (len > 1) {
+  if (card.type !== "item" && len > 1) {
     const idx = 0;
     const prevIndex = (idx - 1 + len) % len;
     const nextIndex = (idx + 1) % len;
@@ -243,7 +254,7 @@ export async function execute(interactionOrMessage, client) {
   
   // Add user stats button (shows for all cards, but refuses on click if not owned)
   // Add user stats button only for owned cards
-  if (ownedEntry && (ownedEntry.count || 0) > 0) {
+  if (card.type !== "item" && ownedEntry && (ownedEntry.count || 0) > 0) {
     buttons.push(
       new ButtonBuilder()
         .setCustomId(`info_userstats:${userId}:${card.id}`)

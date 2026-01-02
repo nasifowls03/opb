@@ -1,6 +1,8 @@
 import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } from "discord.js";
 import SailProgress from "../models/SailProgress.js";
 import Progress from "../models/Progress.js";
+import Balance from "../models/Balance.js";
+import Inventory from "../models/Inventory.js";
 import { getCardById } from "../cards.js";
 
 export const data = new SlashCommandBuilder()
@@ -76,32 +78,69 @@ I'm Luffy! The Man Who Will Become the Pirate King!`)
     // Episode 1: Luffy meets Koby and fights Alvida Pirates
 
     // Award XP if not already awarded for this difficulty
-    const progress = await Progress.findOne({ userId });
+    let progress = await Progress.findOne({ userId });
     if (!progress) {
       progress = new Progress({ userId, team: [], cards: new Map() });
     }
+    // Ensure `cards` is a Map instance so `.get`/`.set` work reliably
+    if (!progress.cards || typeof progress.cards.get !== 'function') {
+      progress.cards = new Map(Object.entries(progress.cards || {}));
+    }
     let xpAmount = 0;
     if (!sailProgress.awardedXp[sailProgress.difficulty]) {
-      xpAmount = sailProgress.difficulty === 'hard' ? 30 : sailProgress.difficulty === 'normal' ? 20 : 10;
+      xpAmount = sailProgress.difficulty === 'hard' ? 30 : sailProgress.difficulty === 'medium' ? 20 : 10;
+      // award to user xp and handle user level
       progress.userXp = (progress.userXp || 0) + xpAmount;
+      let levelsGained = 0;
       while (progress.userXp >= 100) {
         progress.userXp -= 100;
         progress.userLevel = (progress.userLevel || 1) + 1;
+        levelsGained++;
       }
-      // Add XP to each card in the team
+      // Give level up rewards
+      if (levelsGained > 0) {
+        const balance = await Balance.findOne({ userId }) || new Balance({ userId });
+        const inventory = await Inventory.findOne({ userId }) || new Inventory({ userId });
+        let oldLevel = progress.userLevel - levelsGained;
+        for (let lvl = oldLevel + 1; lvl <= progress.userLevel; lvl++) {
+          balance.balance += lvl * 50;
+          const rankIndex = Math.floor((lvl - 1) / 10);
+          const ranks = ['C', 'B', 'A', 'S'];
+          const currentRank = ranks[rankIndex] || 'S';
+          const prevRank = ranks[rankIndex - 1];
+          const chance = (lvl % 10 || 10) * 10;
+          if (Math.random() * 100 < chance) {
+            inventory.chests[currentRank] += 1;
+          } else if (prevRank) {
+            inventory.chests[prevRank] += 1;
+          }
+        }
+        await balance.save();
+        await inventory.save();
+      }
+      // Add XP to each card in the team using leveling logic from level.js
       for (const cardId of progress.team || []) {
-        let entry = progress.cards.get(cardId);
-        if (!entry) {
-          entry = { level: 0, xp: 0, count: 1 };
-          progress.cards.set(cardId, entry);
+        let entry = progress.cards.get(cardId) || { count: 0, xp: 0, level: 0 };
+        if (!entry.count) entry.count = 1;
+        // This ensures we don't lose existing level when adding xp
+        if (entry.level && (!entry.xp || entry.xp === 0)) {
+          entry.xp = entry.level * 100;
         }
-        entry.xp = (entry.xp || 0) + xpAmount;
-        while (entry.xp >= 100) {
-          entry.xp -= 100;
-          entry.level = (entry.level || 0) + 1;
+        // Each level is always 100 XP (flat, not increasing)
+        let totalXp = (entry.xp || 0) + xpAmount;
+        let newLevel = entry.level || 0;
+        while (totalXp >= 100) {
+          totalXp -= 100;
+          newLevel += 1;
         }
+        entry.xp = totalXp;
+        entry.level = newLevel;
+        // Update the Map and mark as modified
+        progress.cards.set(cardId, entry);
+        progress.markModified('cards');
       }
       await progress.save();
+      sailProgress.awardedXp = sailProgress.awardedXp || {};
       sailProgress.awardedXp[sailProgress.difficulty] = true;
       await sailProgress.save();
     } else {
@@ -126,6 +165,117 @@ Luffy is found floating at sea by a cruise ship. After repelling an invasion by 
         new ButtonBuilder()
           .setCustomId(`sail_battle:${userId}:ready`)
           .setLabel("I'm ready!")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`sail:${userId}:sail`)
+          .setLabel('Sail to Episode 2')
+          .setStyle(ButtonStyle.Success),
+        new ButtonBuilder()
+          .setCustomId(`sail:${userId}:map`)
+          .setLabel('Map')
+          .setStyle(ButtonStyle.Secondary)
+      );
+
+    if (isInteraction) {
+      await interactionOrMessage.reply({ embeds: [embed], components: [buttons] });
+    } else {
+      await channel.send({ embeds: [embed], components: [buttons] });
+    }
+  } else if (sailProgress.progress === 2) {
+    // Episode 2: The Great Swordsman Appears! Pirate Hunter Roronoa Zoro
+
+    // Award XP if not already awarded for this difficulty
+    let progress = await Progress.findOne({ userId });
+    if (!progress) {
+      progress = new Progress({ userId, team: [], cards: new Map() });
+    }
+    // Ensure `cards` is a Map instance so `.get`/`.set` work reliably
+    if (!progress.cards || typeof progress.cards.get !== 'function') {
+      progress.cards = new Map(Object.entries(progress.cards || {}));
+    }
+    let xpAmount = 0;
+    if (!sailProgress.awardedXp[`ep2_${sailProgress.difficulty}`]) {
+      xpAmount = sailProgress.difficulty === 'hard' ? 40 : sailProgress.difficulty === 'medium' ? 30 : 20;
+      // award to user xp and handle user level
+      progress.userXp = (progress.userXp || 0) + xpAmount;
+      let levelsGained = 0;
+      while (progress.userXp >= 100) {
+        progress.userXp -= 100;
+        progress.userLevel = (progress.userLevel || 1) + 1;
+        levelsGained++;
+      }
+      // Give level up rewards
+      if (levelsGained > 0) {
+        const balance = await Balance.findOne({ userId }) || new Balance({ userId });
+        const inventory = await Inventory.findOne({ userId }) || new Inventory({ userId });
+        let oldLevel = progress.userLevel - levelsGained;
+        for (let lvl = oldLevel + 1; lvl <= progress.userLevel; lvl++) {
+          balance.balance += lvl * 50;
+          const rankIndex = Math.floor((lvl - 1) / 10);
+          const ranks = ['C', 'B', 'A', 'S'];
+          const currentRank = ranks[rankIndex] || 'S';
+          const prevRank = ranks[rankIndex - 1];
+          const chance = (lvl % 10 || 10) * 10;
+          if (Math.random() * 100 < chance) {
+            inventory.chests[currentRank] += 1;
+          } else if (prevRank) {
+            inventory.chests[prevRank] += 1;
+          }
+        }
+        await balance.save();
+        await inventory.save();
+      }
+      // Add XP to each card in the team using leveling logic from level.js
+      for (const cardId of progress.team || []) {
+        let entry = progress.cards.get(cardId) || { count: 0, xp: 0, level: 0 };
+        if (!entry.count) entry.count = 1;
+        // This ensures we don't lose existing level when adding xp
+        if (entry.level && (!entry.xp || entry.xp === 0)) {
+          entry.xp = entry.level * 100;
+        }
+        // Each level is always 100 XP (flat, not increasing)
+        let totalXp = (entry.xp || 0) + xpAmount;
+        let newLevel = entry.level || 0;
+        while (totalXp >= 100) {
+          totalXp -= 100;
+          newLevel += 1;
+        }
+        entry.xp = totalXp;
+        entry.level = newLevel;
+        // Update the Map and mark as modified
+        progress.cards.set(cardId, entry);
+        progress.markModified('cards');
+      }
+      await progress.save();
+      sailProgress.awardedXp = sailProgress.awardedXp || {};
+      sailProgress.awardedXp[`ep2_${sailProgress.difficulty}`] = true;
+      await sailProgress.save();
+    } else {
+      xpAmount = sailProgress.difficulty === 'hard' ? 40 : sailProgress.difficulty === 'medium' ? 30 : 20;
+    }
+
+    const embed = new EmbedBuilder()
+      .setColor('Blue')
+      .setDescription(`*The Great Swordsman Appears! Pirate Hunter Roronoa Zoro - episode 2*
+
+Luffy and Koby find Zoro captured in Shells Town's Marine base, with the Marines intending to execute him. Luffy and Koby work together to retrieve Zoro's katanas, as well as confront the tyrannical Marine Captain Morgan and his son Helmeppo.
+
+**Possible rewards:**
+100 - 200 beli
+1 - 2 C chest
+1x rika card
+1x Roronoa Zoro card
+1x Helmeppo card (Hard mode Exclusive)
+1 B chest (Hard mode Exclusive)
+
+*XP awarded: +${xpAmount} to user and each team card.*`)
+      .setImage('https://files.catbox.moe/pdfqe1.webp');
+
+    const buttons = new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(`sail_battle_ep2:${userId}:start`)
+          .setLabel("Sail to Episode 2")
           .setStyle(ButtonStyle.Primary),
         new ButtonBuilder()
           .setCustomId(`sail:${userId}:map`)

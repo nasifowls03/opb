@@ -12,6 +12,19 @@ import Balance from "../models/Balance.js";
 import { getCardById, cards } from "../cards.js";
 import { buildWeaponBlueprintEmbed } from "../lib/weaponEmbed.js";
 
+function getWeaponById(weaponId) {
+  if (!weaponId) return null;
+  const q = String(weaponId).toLowerCase();
+  let weapon = cards.find((c) => (c.type === "weapon" || c.type === "banner") && c.id.toLowerCase() === q);
+  if (weapon) return weapon;
+  weapon = cards.find((c) => (c.type === "weapon" || c.type === "banner") && c.name.toLowerCase() === q);
+  if (weapon) return weapon;
+  weapon = cards.find((c) => (c.type === "weapon" || c.type === "banner") && c.name.toLowerCase().startsWith(q));
+  if (weapon) return weapon;
+  weapon = cards.find((c) => (c.type === "weapon" || c.type === "banner") && (c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q)));
+  return weapon || null;
+}
+
 export const data = new SlashCommandBuilder()
   .setName("craft")
   .setDescription("Craft weapons from blueprints")
@@ -22,13 +35,13 @@ export const data = new SlashCommandBuilder()
 function getCraftableById(craftableId) {
   if (!craftableId) return null;
   const q = String(craftableId).toLowerCase();
-  let craftable = cards.find((c) => (c.type === "weapon" || (c.type === "item" && c.craftingRequirements)) && c.id.toLowerCase() === q);
+  let craftable = cards.find((c) => (c.type === "weapon" || c.type === "banner" || (c.type === "item" && c.craftingRequirements)) && c.id.toLowerCase() === q);
   if (craftable) return craftable;
-  craftable = cards.find((c) => (c.type === "weapon" || (c.type === "item" && c.craftingRequirements)) && c.name.toLowerCase() === q);
+  craftable = cards.find((c) => (c.type === "weapon" || c.type === "banner" || (c.type === "item" && c.craftingRequirements)) && c.name.toLowerCase() === q);
   if (craftable) return craftable;
-  craftable = cards.find((c) => (c.type === "weapon" || (c.type === "item" && c.craftingRequirements)) && c.name.toLowerCase().startsWith(q));
+  craftable = cards.find((c) => (c.type === "weapon" || c.type === "banner" || (c.type === "item" && c.craftingRequirements)) && c.name.toLowerCase().startsWith(q));
   if (craftable) return craftable;
-  craftable = cards.find((c) => (c.type === "weapon" || (c.type === "item" && c.craftingRequirements)) && (c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q)));
+  craftable = cards.find((c) => (c.type === "weapon" || c.type === "banner" || (c.type === "item" && c.craftingRequirements)) && (c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q)));
   return craftable || null;
 }
 
@@ -54,32 +67,37 @@ export async function execute(interactionOrMessage, client) {
     weaponQuery = parts.join(" ") || null;
   }
 
-  // Get user's weapon inventory
-  let weaponInv = await WeaponInventory.findOne({ userId });
-  if (!weaponInv) {
-    weaponInv = new WeaponInventory({ userId, blueprints: {}, weapons: {}, materials: {} });
+  // Get user's inventory
+  let inv = await Inventory.findOne({ userId });
+  if (!inv) {
+    inv = new Inventory({ userId });
   }
+
+  // Get user's progress for blueprints
+  const progress = await Progress.findOne({ userId });
+  if (!progress) return; // should have progress
 
   // If no weapon specified, show all blueprints
   if (!weaponQuery) {
     const blueprintCards = [];
     
-    // Find all blueprint-type cards in weaponInv.blueprints
-    for (const [cardId, count] of Object.entries(weaponInv.blueprints || {})) {
-      if (count > 0) {
+// Find all blueprint-type cards in progress.cards
+    const cardsEntries = progress.cards instanceof Map ? Array.from(progress.cards.entries()) : Object.entries(progress.cards || {});
+    for (const [cardId, entry] of cardsEntries) {
+      if (entry.count > 0) {
         const card = getCardById(cardId);
         if (card && card.type === "item" && card.ability && card.ability.includes("Blueprint")) {
           // This is a blueprint card
           const craftedWeapon = card.evolutions && card.evolutions[0] ? getCardById(card.evolutions[0]) : null;
-          if (craftedWeapon && craftedWeapon.type === "weapon") {
-            blueprintCards.push({ card, weapon: craftedWeapon, count });
+          if (craftedWeapon && (craftedWeapon.type === "weapon" || craftedWeapon.type === "banner")) {
+            blueprintCards.push({ card, weapon: craftedWeapon, count: entry.count });
           }
         }
       }
     }
 
     if (blueprintCards.length === 0) {
-      const reply = "You don't have any weapon blueprints.";
+      const reply = "You don't have any Blueprints.";
       if (isInteraction) await interactionOrMessage.reply({ content: reply, ephemeral: true });
       else await channel.send(reply);
       return;
@@ -90,11 +108,11 @@ export async function execute(interactionOrMessage, client) {
       
       const requirements = weapon.craftingRequirements?.materials || {};
       // read materials from Inventory
-      const inventory = await Inventory.findOne({ userId });
-      const invItems = inventory && inventory.items ? (inventory.items instanceof Map ? Object.fromEntries(inventory.items) : inventory.items) : {};
+      // already have inv
+      const invItems = inv && inv.items ? (inv.items instanceof Map ? Object.fromEntries(inv.items) : inv.items) : {};
       const requirementsList = Object.entries(requirements)
         .map(([mat, needed]) => {
-          const have = invItems?.[mat] || 0;
+          const have = invItems[mat] || invItems[mat.toLowerCase()] || 0;
           const canCraft = have >= needed;
           return `${mat}: ${have}/${needed}${canCraft ? "" : " (need " + (needed - have) + " more)"}`;
         })
@@ -149,7 +167,8 @@ export async function execute(interactionOrMessage, client) {
   }
 
   // Check if user has the blueprint
-  const blueprintCount = weaponInv.blueprints[blueprintCard.id] || 0;
+  const blueprintEntry = cardsMap.get(blueprintCard.id);
+  const blueprintCount = blueprintEntry ? (blueprintEntry.count || 0) : 0;
   if (blueprintCount <= 0) {
     const reply = `You don't have a blueprint for **${weapon.name}**.`;
     if (isInteraction) await interactionOrMessage.reply({ content: reply, ephemeral: true });
@@ -164,9 +183,12 @@ export async function execute(interactionOrMessage, client) {
   const inventory = await Inventory.findOne({ userId });
   const invItems = inventory && inventory.items ? (inventory.items instanceof Map ? Object.fromEntries(inventory.items) : inventory.items) : {};
   
+  // get weapon inventory
+  let weaponInv = await WeaponInventory.findOne({ userId }) || new WeaponInventory({ userId, weapons: new Map() });
+  
   const missingMaterials = [];
   for (const [mat, needed] of Object.entries(requirements)) {
-    const have = invItems?.[mat] || 0;
+    const have = invItems[mat] || invItems[mat.toLowerCase()] || 0;
     if (have < needed) {
       missingMaterials.push(`${mat}: have ${have}, need ${needed}`);
     }
@@ -199,6 +221,8 @@ export async function execute(interactionOrMessage, client) {
   } else {
     cardsMap.set(blueprintCard.id, blueprintEntry);
   }
+  progDoc.markModified('cards');
+  await progDoc.save();
 
   // Consume materials from Inventory
   for (const [mat, needed] of Object.entries(requirements)) {
@@ -218,6 +242,8 @@ export async function execute(interactionOrMessage, client) {
   } else {
     weaponInv.weapons[weapon.id] = { level: 1, xp: 0, equippedTo: null };
   }
+  weaponInv.markModified('weapons');
+  await weaponInv.save();
 
   // Also record the crafted weapon in the user's Progress so info() sees ownership
   const existingWeaponEntry = cardsMap.get(weapon.id) || null;
@@ -243,12 +269,6 @@ export async function execute(interactionOrMessage, client) {
     inventory.markModified('items');
     await inventory.save();
   }
-  // Consume the blueprint
-  weaponInv.blueprints[blueprintCard.id] = blueprintCount - 1;
-  if (weaponInv.blueprints[blueprintCard.id] <= 0) delete weaponInv.blueprints[blueprintCard.id];
-  weaponInv.markModified('blueprints');
-
-  await weaponInv.save();
 
   // Deduct beli if there's a crafting cost
   if (craftingCost > 0) {

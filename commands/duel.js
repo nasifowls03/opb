@@ -2,6 +2,7 @@ import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, But
 import Balance from "../models/Balance.js";
 import Duel from "../models/Duel.js";
 import Progress from "../models/Progress.js";
+// import WeaponInventory from "../models/WeaponInventory.js";
 import { getCardById } from "../cards.js";
 import { roundNearestFive, roundRangeToFive } from "../lib/stats.js";
 import { computeTeamBoosts } from "../lib/boosts.js";
@@ -229,7 +230,7 @@ export async function execute(interactionOrMessage) {
         }
 
         // Apply banner passive boost
-        const bannerSignature = ['alvida_c_01', 'heppoko_c_01', 'peppoko_c_01', 'poppoko_c_01', 'koby_c_01'];
+        const bannerSignature = ['Alvida_c_01', 'heppoko_c_01', 'Peppoko_c_01', 'Poppoko_c_01', 'koby_c_01'];
         if (p1HasBanner && bannerSignature.includes(cardId)) {
           attackMin = Math.round(attackMin * 1.05);
           attackMax = Math.round(attackMax * 1.05);
@@ -287,7 +288,7 @@ export async function execute(interactionOrMessage) {
         }
 
         // Apply banner passive boost
-        const bannerSignature = ['alvida_c_01', 'heppoko_c_01', 'peppoko_c_01', 'poppoko_c_01', 'koby_c_01'];
+        const bannerSignature = ['Alvida_c_01', 'heppoko_c_01', 'Peppoko_c_01', 'Poppoko_c_01', 'koby_c_01'];
         if (p2HasBanner && bannerSignature.includes(cardId)) {
           attackMin = Math.round(attackMin * 1.05);
           attackMax = Math.round(attackMax * 1.05);
@@ -673,7 +674,7 @@ async function executeAttack(sessionId, charIdx, attackType, targetIdx, msg, att
           const side = session[sideKey];
           const oldBoosts = side.teamBoosts || { atk: 0, hp: 0, special: 0 };
           const aliveIds = side.cards.filter(c => c.health > 0).map(c => c.cardId);
-          const newBoosts = computeTeamBoosts(aliveIds, side.cardsMap || null);
+          const newBoosts = computeTeamBoosts(aliveIds, side.cardsMap || null, null);
           session[sideKey].teamBoosts = newBoosts;
 
           const oldAtk = oldBoosts.atk || 0, oldHp = oldBoosts.hp || 0, oldSp = oldBoosts.special || 0;
@@ -747,8 +748,9 @@ async function endDuel(sessionId, winner, loser, channel) {
   if (!session) return;
 
   // Calculate bounty and XP based on loser's level (level 0 => 0, level 1 => 10 XP)
-  const winnerBal = await Balance.findOne({ userId: winner.userId }) || new Balance({ userId: winner.userId, amount: 0, xp: 0, level: 0 });
-  const loserBal = await Balance.findOne({ userId: loser.userId }) || new Balance({ userId: loser.userId, amount: 0, xp: 0, level: 0 });
+  const winnerBal = await Balance.findOne({ userId: winner.userId }) || new Balance({ userId: winner.userId, amount: 0 });
+  const loserBal = await Balance.findOne({ userId: loser.userId }) || new Balance({ userId: loser.userId, amount: 0 });
+  const winnerProgress = await Progress.findOne({ userId: winner.userId }) || new Progress({ userId: winner.userId, team: [], cards: new Map() });
 
   const loserLevel = Math.max(0, loserBal.level || 0);
   // XP gained is 10 * loser level (cap by daily XP limit)
@@ -775,8 +777,16 @@ async function endDuel(sessionId, winner, loser, channel) {
   const bounty = loserLevel * 100;
 
   winnerBal.amount = (winnerBal.amount || 0) + bounty;
-  winnerBal.xp = (winnerBal.xp || 0) + xpGain;
+  winnerProgress.userXp = (winnerProgress.userXp || 0) + xpGain;
+  // Level up
+  let levelsGained = 0;
+  while (winnerProgress.userXp >= 100) {
+    winnerProgress.userXp -= 100;
+    winnerProgress.userLevel = (winnerProgress.userLevel || 1) + 1;
+    levelsGained++;
+  }
   await winnerBal.save();
+  await winnerProgress.save();
 
   // Record quest progress
   try {

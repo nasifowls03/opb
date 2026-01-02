@@ -15,13 +15,13 @@ export const data = new SlashCommandBuilder()
 function getWeaponById(weaponId) {
   if (!weaponId) return null;
   const q = String(weaponId).toLowerCase();
-  let weapon = cards.find((c) => c.type === "weapon" && c.id.toLowerCase() === q);
+  let weapon = cards.find((c) => (c.type === "weapon" || c.type === "banner") && c.id.toLowerCase() === q);
   if (weapon) return weapon;
-  weapon = cards.find((c) => c.type === "weapon" && c.name.toLowerCase() === q);
+  weapon = cards.find((c) => (c.type === "weapon" || c.type === "banner") && c.name.toLowerCase() === q);
   if (weapon) return weapon;
-  weapon = cards.find((c) => c.type === "weapon" && c.name.toLowerCase().startsWith(q));
+  weapon = cards.find((c) => (c.type === "weapon" || c.type === "banner") && c.name.toLowerCase().startsWith(q));
   if (weapon) return weapon;
-  weapon = cards.find((c) => c.type === "weapon" && (c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q)));
+  weapon = cards.find((c) => (c.type === "weapon" || c.type === "banner") && (c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q)));
   return weapon || null;
 }
 
@@ -70,6 +70,31 @@ export async function execute(interactionOrMessage, client) {
     const reply = "You don't have any weapons crafted.";
     if (isInteraction) await interactionOrMessage.reply({ content: reply, ephemeral: true }); else await channel.send(reply);
     return;
+  }
+
+  // Handle banner unequip
+  if (weaponQuery) {
+    const weapon = getWeaponById(weaponQuery);
+    if (weapon && weapon.type === "banner") {
+      if (weaponInv.teamBanner === weapon.id) {
+        weaponInv.teamBanner = null;
+        await weaponInv.save();
+        const embed = new EmbedBuilder()
+          .setTitle("Banner Unequipped!")
+          .setColor(0xFF0000)
+          .setDescription(`**${weapon.name}** has been unequipped from your team.`);
+        if (isInteraction) {
+          await interactionOrMessage.reply({ embeds: [embed] });
+        } else {
+          await channel.send({ embeds: [embed] });
+        }
+        return;
+      } else {
+        const reply = `**${weapon.name}** is not equipped as your team banner.`;
+        if (isInteraction) await interactionOrMessage.reply({ content: reply, ephemeral: true }); else await channel.send(reply);
+        return;
+      }
+    }
   }
 
   // If card provided, find any weapon equipped to that card and unequip

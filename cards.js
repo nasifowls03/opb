@@ -1,6 +1,8 @@
 // cards.js
 // Centralized card and rank definitions
 
+import { extraCards } from "./cards.extra.js";
+
 export const RANKS = {
   C: { name: "C", color: 0x00A300, icon: "https://files.catbox.moe/8gn79p.png", value: 1 },
   B: { name: "B", color: 0x3498db, icon: "https://files.catbox.moe/rv1frd.png", value: 2 },
@@ -10,8 +12,6 @@ export const RANKS = {
   UR: { name: "UR", color: 0x8B0000, icon: "https://files.catbox.moe/200d01.webp", value: 6 }, // dark red
   Z: { name: "Z", color: 0x000000, icon: "https://files.catbox.moe/xeuw9j.webp", value: 7 }, // special event rank
 };
-
-import { extraCards } from "./cards.extra.js";
 
 export const cards = [
   // LUFFY PROGRESSION - Chronological (Kid -> Dawn Island -> b Captain -> a Worst Gen -> s Emperor -> ur Warrior)
@@ -1882,7 +1882,7 @@ export const cards = [
     rank: "SS",
     type: "weapon",
     // Not directly pullable — only the blueprint should be pullable
-    pullable: false,
+    pullable: true,
     boost: { atk: 20, spd: 0, hp: 0 },
     signatureCards: ["roronoazoro_a_02", "roronoazoro_a_03", "roronoazoro_s_04", "roronoazoro_ss_05", "shimotsukikuina_b_01"],
     mainCard: "roronoazoro_s_04",
@@ -1902,11 +1902,11 @@ export const cards = [
     name: "Alvida Pirates Banner",
     title: "Alvida Pirates banner",
     rank: "C",
-    type: "weapon",
+    type: "banner",
     pullable: false,
     boost: { atk: 5, hp: 5 },
-    signatureCards: ["alvida_c_01", "heppoko_c_01", "peppoko_c_01", "poppoko_c_01", "koby_c_01"],
-    mainCard: "alvida_c_01",
+    signatureCards: ["Alvida_c_01", "heppoko_c_01", "Peppoko_c_01", "Poppoko_c_01", "koby_c_01"],
+    mainCard: "Alvida_c_01",
     image: "https://files.catbox.moe/placeholder.webp",
     craftingRequirements: {
       materials: {

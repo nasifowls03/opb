@@ -14,6 +14,7 @@ const ProgressSchema = new mongoose.Schema({
   userXp: { type: Number, default: 0 },
   userLevel: { type: Number, default: 1 },
   claimedLevel: { type: Number, default: 0 },
+  karma: { type: Number, default: 0 }, // karma system: negative = good, positive = bad, max 100
 });
 
 export default mongoose.models.Progress || mongoose.model("Progress", ProgressSchema);

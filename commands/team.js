@@ -3,6 +3,7 @@ import Progress from "../models/Progress.js";
 import { cards, getCardById, getRankInfo, RANKS } from "../cards.js";
 import { computeTeamBoosts, computeTeamBoostsDetailed } from "../lib/boosts.js";
 import { roundNearestFive } from "../lib/stats.js";
+import WeaponInventory from "../models/WeaponInventory.js";
 
 function levenshtein(a, b) {
   const dp = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
@@ -157,8 +158,11 @@ export async function execute(interactionOrMessage, client) {
   // view
   const teamIds = prog.team || [];
 
+  // Fetch weapon inventory for banner boosts
+  const weaponInv = await WeaponInventory.findOne({ userId }) || null;
+
   // compute and show team boosts (if any)
-  const detailed = (teamIds && teamIds.length) ? computeTeamBoostsDetailed(teamIds, prog.cards) : { totals: { atk:0,hp:0,special:0 }, details: [] };
+  const detailed = (teamIds && teamIds.length) ? computeTeamBoostsDetailed(teamIds, prog.cards, weaponInv) : { totals: { atk:0,hp:0,special:0 }, details: [] };
   const boosts = detailed.totals;
 
   // compute average rank color
@@ -215,11 +219,13 @@ export async function execute(interactionOrMessage, client) {
       if (!card) return { name: `#${i+1}: Unknown`, value: `ID: ${id}`, inline: true };
 
       const level = entry.level || 0;
-      const basePower = Math.round((card.power || 0) * (1 + level * 0.01));
+      const baseAttackMin = Math.round((card.attackRange?.[0] || card.power || 0) * (1 + level * 0.01));
+      const baseAttackMax = Math.round((card.attackRange?.[1] || card.power || 0) * (1 + level * 0.01));
       const baseHealth = Math.round((card.health || 0) * (1 + level * 0.01));
 
       const cardBoost = detailed.details.find(d => d && d.id === id) || { atk:0, hp:0, special:0 };
-      const effectivePower = roundNearestFive(Math.round(basePower * (1 + cardBoost.atk / 100)));
+      const effectiveAttackMin = roundNearestFive(Math.round(baseAttackMin * (1 + cardBoost.atk / 100)));
+      const effectiveAttackMax = roundNearestFive(Math.round(baseAttackMax * (1 + cardBoost.atk / 100)));
       const effectiveHealth = roundNearestFive(Math.round(baseHealth * (1 + cardBoost.hp / 100)));
 
       const boostParts = [];
@@ -227,7 +233,8 @@ export async function execute(interactionOrMessage, client) {
       if (cardBoost.hp) boostParts.push(`HP+${cardBoost.hp}%`);
       if (cardBoost.special) boostParts.push(`SP+${cardBoost.special}%`);
 
-      const value = `ATK: ${effectivePower} | HP: ${effectiveHealth}${boostParts.length ? `\nBoost: ${boostParts.join('/')}` : ''}`;
+      const attackDisplay = card.attackRange ? `${effectiveAttackMin} - ${effectiveAttackMax}` : effectiveAttackMin;
+      const value = `ATK: ${attackDisplay} | HP: ${effectiveHealth}${boostParts.length ? `\nBoost: ${boostParts.join('/')}` : ''}`;
 
       return {
         name: `#${i+1}: ${card.name} (${card.rank})`,
@@ -245,6 +252,14 @@ export async function execute(interactionOrMessage, client) {
     if (boosts.special) boostDesc += (boostDesc ? ' • ' : '') + `SPECIAL +${boosts.special}%`;
     if (boostDesc) {
       embed.addFields({ name: 'Team Boosts', value: boostDesc, inline: false });
+    }
+
+    // Add equipped banner if any
+    if (weaponInv && weaponInv.teamBanner) {
+      const bannerCard = getCardById(weaponInv.teamBanner);
+      if (bannerCard) {
+        embed.addFields({ name: 'Equipped Banner', value: bannerCard.name, inline: false });
+      }
     }
   }
 

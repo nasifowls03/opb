@@ -19,13 +19,13 @@ export const data = new SlashCommandBuilder()
 function getWeaponById(weaponId) {
   if (!weaponId) return null;
   const q = String(weaponId).toLowerCase();
-  let weapon = cards.find((c) => c.type === "weapon" && c.id.toLowerCase() === q);
+  let weapon = cards.find((c) => (c.type === "weapon" || c.type === "banner") && c.id.toLowerCase() === q);
   if (weapon) return weapon;
-  weapon = cards.find((c) => c.type === "weapon" && c.name.toLowerCase() === q);
+  weapon = cards.find((c) => (c.type === "weapon" || c.type === "banner") && c.name.toLowerCase() === q);
   if (weapon) return weapon;
-  weapon = cards.find((c) => c.type === "weapon" && c.name.toLowerCase().startsWith(q));
+  weapon = cards.find((c) => (c.type === "weapon" || c.type === "banner") && c.name.toLowerCase().startsWith(q));
   if (weapon) return weapon;
-  weapon = cards.find((c) => c.type === "weapon" && (c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q)));
+  weapon = cards.find((c) => (c.type === "weapon" || c.type === "banner") && (c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q)));
   return weapon || null;
 }
 
@@ -63,15 +63,13 @@ export async function execute(interactionOrMessage, client) {
   } else {
     const parts = interactionOrMessage.content.trim().split(/\s+/);
     parts.splice(0, 2); // remove prefix and command
-    // Format: op equip weaponName cardName or op equip weaponName "card name"
-    if (parts.length < 2) {
-      await interactionOrMessage.channel.send("Usage: `op equip <weapon> <card>`");
+    // Format: op equip weaponName [cardName]
+    if (parts.length === 0) {
+      await interactionOrMessage.channel.send("Usage: `op equip <weapon> [card]`");
       return;
     }
-    const weaponPart = parts[0];
-    const cardPart = parts.slice(1).join(" ");
-    weaponQuery = weaponPart;
-    cardQuery = cardPart;
+    weaponQuery = parts[0];
+    cardQuery = parts.length > 1 ? parts.slice(1).join(" ") : null;
   }
 
   // Find weapon
@@ -82,7 +80,71 @@ export async function execute(interactionOrMessage, client) {
     else await interactionOrMessage.channel.send(reply);
     return;
   }
+  if (weapon.type === "banner") {
+    // Equip banner to team
+    if (cardQuery) {
+      const reply = `Banners don't require a card. Use \`op equip ${weapon.name}\``;
+      if (isInteraction) await interactionOrMessage.reply({ content: reply, ephemeral: true });
+      else await channel.send(reply);
+      return;
+    }
 
+    let weaponInv = await WeaponInventory.findOne({ userId });
+    if (!weaponInv) {
+      const reply = `You don't have **${weapon.name}** crafted.`;
+      if (isInteraction) await interactionOrMessage.reply({ content: reply, ephemeral: true });
+      else await channel.send(reply);
+      return;
+    }
+
+    const userWeapon = weaponInv.weapons instanceof Map ? weaponInv.weapons.get(weapon.id) : weaponInv.weapons?.[weapon.id];
+    if (!userWeapon) {
+      const reply = `You don't own **${weapon.name}**.`;
+      if (isInteraction) await interactionOrMessage.reply({ content: reply, ephemeral: true });
+      else await channel.send(reply);
+      return;
+    }
+
+    // Check if already have a banner equipped
+    if (weaponInv.teamBanner) {
+      if (weaponInv.teamBanner === weapon.id) {
+        const reply = `**${weapon.name}** is already equipped as your team banner.`;
+        if (isInteraction) await interactionOrMessage.reply({ content: reply, ephemeral: true });
+        else await channel.send(reply);
+        return;
+      } else {
+        const currentBanner = getCardById(weaponInv.teamBanner);
+        const reply = `You already have **${currentBanner?.name || weaponInv.teamBanner}** equipped as banner. Unequip it first.`;
+        if (isInteraction) await interactionOrMessage.reply({ content: reply, ephemeral: true });
+        else await channel.send(reply);
+        return;
+      }
+    }
+
+    // Equip
+    weaponInv.teamBanner = weapon.id;
+    await weaponInv.save();
+
+    const embed = new EmbedBuilder()
+      .setTitle("Banner Equipped!")
+      .setColor(0x00FF00)
+      .setDescription(`**${weapon.name}** has been equipped to your team.`);
+
+    if (isInteraction) {
+      await interactionOrMessage.reply({ embeds: [embed] });
+    } else {
+      await channel.send({ embeds: [embed] });
+    }
+    return;
+  }
+
+  // For weapons, require card
+  if (!cardQuery) {
+    const reply = `Weapons require a card. Use \`op equip ${weapon.name} <card>\``;
+    if (isInteraction) await interactionOrMessage.reply({ content: reply, ephemeral: true });
+    else await channel.send(reply);
+    return;
+  }
   // Find card
   const card = getCardByQuery(cardQuery);
   if (!card) {
