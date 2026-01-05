@@ -1,4 +1,5 @@
 import Progress from "../models/Progress.js";
+import { startEpisode, handleAccuracy } from "./episodeInteractionCreate.js";
 import Balance from "../models/Balance.js";
 import Inventory from "../models/Inventory.js";
 // import WeaponInventory from "../models/WeaponInventory.js";
@@ -64,11 +65,13 @@ async function endSailBattle(sessionId, channel, won) {
     let nextProgress = 2;
     let resetToken = false;
 
+    const multiplier = sailProgress && sailProgress.difficulty === 'hard' ? 1.5 : (sailProgress && sailProgress.difficulty === 'medium' ? 1.25 : 1);
+
     if (session.episode === 2) {
       episodeTitle = 'Episode 2';
       nextProgress = 3;
       const beli = Math.floor(Math.random() * 101) + 100;
-      balance.balance += beli;
+      balance.balance += Math.ceil(beli * multiplier);
       const chests = Math.floor(Math.random() * 2) + 1;
       inventory.chests.C += chests;
       rewards = ['rika_c_01', 'roronoazoro_c_01'];
@@ -95,7 +98,7 @@ async function endSailBattle(sessionId, channel, won) {
       episodeTitle = 'Episode 3';
       nextProgress = 4;
       const beli = Math.floor(Math.random() * 251) + 250; // 250-500
-      balance.balance += beli;
+      balance.balance += Math.ceil(beli * multiplier);
       const chests = Math.floor(Math.random() * 2) + 1;
       inventory.chests.C += chests;
       // reset token exclusive to hard mode for Episode 3
@@ -111,7 +114,7 @@ async function endSailBattle(sessionId, channel, won) {
       // common rewards (cards/chests) may be added here if needed
     } else {
       const beli = Math.floor(Math.random() * 151) + 100;
-      balance.balance += beli;
+      balance.balance += Math.ceil(beli * multiplier);
       const chests = Math.floor(Math.random() * 2) + 1;
       inventory.chests.C += chests;
       if (Math.random() < 0.5) {
@@ -124,6 +127,45 @@ async function endSailBattle(sessionId, channel, won) {
       }
       if (sailProgress.difficulty === 'hard' || sailProgress.difficulty === 'medium') {
         rewards.push('alvida_pirates_banner_blueprint_c_01');
+      }
+    }
+    
+    if (session.episode === 4) {
+      // Episode 4 rewards
+      episodeTitle = 'Episode 4';
+      nextProgress = 5;
+      const beli = Math.floor(Math.random() * 101) + 100; // 100-200
+      balance.balance += Math.ceil(beli * multiplier);
+      const chests = 1;
+      inventory.chests.C += chests;
+      rewards = ['Strawhat_blueprint_s_01'];
+      if (sailProgress.difficulty === 'hard') {
+        rewards.push('higuma_c_01', 'lordofthecoast_c_01');
+      }
+    }
+    else if (session.episode === 5) {
+      // Episode 5 rewards
+      episodeTitle = 'Episode 5';
+      nextProgress = 6;
+      const beli = Math.floor(Math.random() * 101) + 100; // 100-200
+      balance.balance += Math.ceil(beli * multiplier);
+      const chests = 1;
+      inventory.chests.C += chests;
+      rewards = [];
+      if (sailProgress.difficulty === 'hard') {
+        // no extra hard-only collectibles for Episode 5
+      }
+    } else if (session.episode === 6) {
+      // Episode 6 rewards
+      episodeTitle = 'Episode 6';
+      nextProgress = 7;
+      const beli = Math.floor(Math.random() * 101) + 100; // 100-200
+      balance.balance += Math.ceil(beli * multiplier);
+      const chests = 1;
+      inventory.chests.C += chests;
+      rewards = ['chouchou_c_01', 'boodle_c_01'];
+      if (sailProgress.difficulty === 'hard') {
+        rewards.push('mohji_c_01', 'richie_c_01');
       }
     }
 
@@ -182,16 +224,119 @@ async function endSailBattle(sessionId, channel, won) {
 
     await progress.save();
 
+    // Apply any data-driven rewards defined in events/episodes_definitions.js (additive)
+    try {
+      const epMod = await import('./episodes_definitions.js');
+      const epDef = epMod && (epMod.episodes || (epMod.default && epMod.default.episodes)) ? (epMod.episodes || (epMod.default && epMod.default.episodes))[session.episode] : null;
+      if (epDef && Array.isArray(epDef.rewards)) {
+        const extraParts = [];
+        for (const r of epDef.rewards) {
+          try {
+            if (r.hardOnly && sailProgress && sailProgress.difficulty !== 'hard') continue;
+            if (r.type === 'beli') {
+              let amt = 0;
+              if (typeof r.amount === 'string' && r.amount.includes('-')) {
+                const [min, max] = r.amount.split('-').map(n => parseInt(n, 10));
+                amt = Math.floor(Math.random() * (max - min + 1)) + min;
+              } else {
+                amt = Number(r.amount) || 0;
+              }
+              // apply difficulty multiplier and round up
+              const finalAmt = Math.ceil((amt || 0) * multiplier);
+              balance.balance = (balance.balance || 0) + finalAmt;
+              extraParts.push(`${finalAmt} beli`);
+            } else if (r.type === 'chest') {
+              const rk = (r.rank || 'C').toUpperCase();
+              const amt = Number(r.amount) || 1;
+              inventory.chests = inventory.chests || { C:0,B:0,A:0,S:0 };
+              inventory.chests[rk] = (inventory.chests[rk] || 0) + amt;
+              extraParts.push(`${amt} ${rk} tier chest${amt>1? 's':''}`);
+            } else if (r.type === 'card') {
+              // support both `id` or `name` in episode definitions
+              let cid = r.id || null;
+              if (!cid && r.name) {
+                const found = (cards || []).find(c => c && (c.id === r.name || c.name === r.name || (c.name && c.name.toLowerCase() === String(r.name).toLowerCase())));
+                cid = found ? found.id : String(r.name);
+              }
+              const amt = Number(r.amount) || 1;
+              if (!progress.cards) progress.cards = new Map(Object.entries(progress.cards || {}));
+              if (typeof progress.cards.get === 'function') {
+                if (progress.cards.has(cid)) {
+                  // convert duplicates into 100 XP per copy
+                  let entry = progress.cards.get(cid);
+                  let totalXp = (entry.xp || 0) + (100 * amt);
+                  let newLevel = entry.level || 0;
+                  while (totalXp >= 100) { totalXp -= 100; newLevel += 1; }
+                  entry.xp = totalXp; entry.level = newLevel;
+                  progress.cards.set(cid, entry);
+                } else {
+                  progress.cards.set(cid, { level: 1, xp: 0, count: amt });
+                }
+              } else {
+                const obj = progress.cards || {};
+                if (obj[cid]) {
+                  obj[cid].xp = (obj[cid].xp || 0) + (100 * amt);
+                  while (obj[cid].xp >= 100) { obj[cid].xp -= 100; obj[cid].level = (obj[cid].level||0) + 1; }
+                } else {
+                  obj[cid] = { level: 1, xp: 0, count: amt };
+                }
+                progress.cards = obj;
+              }
+              // present friendly name if available
+              const friendly = getCardById(cid); extraParts.push(`${amt}× ${friendly ? friendly.name : cid}`);
+            } else if (r.type === 'reset') {
+              const amt = Number(r.amount) || 1;
+              balance.resetTokens = (balance.resetTokens || 0) + amt;
+              extraParts.push(`${amt} reset token${amt>1 ? 's' : ''}`);
+            } else if (r.type === 'blueprint') {
+              const id = r.id || r.name;
+              const amt = Number(r.amount) || 1;
+              weaponInv.blueprints = weaponInv.blueprints || {};
+              weaponInv.blueprints[id] = (weaponInv.blueprints[id] || 0) + amt;
+              extraParts.push(`${amt}× ${id} (blueprint)`);
+            }
+          } catch (e) { console.error('Failed to apply episode-defined reward:', e); }
+        }
+        if (extraParts.length) {
+          // save models and append to rewardsText after existing text
+          try { await balance.save(); } catch (e) {}
+          try { await inventory.save(); } catch (e) {}
+          try { await weaponInv.save(); } catch (e) {}
+          try { progress.markModified && progress.markModified('cards'); await progress.save(); } catch (e) {}
+          // attach to rewardsText (added later) by appending a marker in a temporary variable
+          if (extraParts.length) {
+            // store on session for later inclusion in the embed text
+            session._extraEpisodeRewards = extraParts;
+          }
+        }
+      }
+    } catch (e) { console.error('Failed to apply episode definitions rewards:', e); }
+
     let rewardsText = '';
     if (session.episode === 2) {
       const beli = Math.floor(Math.random() * 101) + 100;
       const chests = Math.floor(Math.random() * 2) + 1;
       rewardsText = `${beli} beli\n${chests} C tier chest${chests > 1 ? 's' : ''}`;
       if (sailProgress.difficulty === 'hard') rewardsText += '\n1 B tier chest';
+    } else if (session.episode === 3) {
+      const beli = Math.floor(Math.random() * 251) + 250;
+      const chests = Math.floor(Math.random() * 2) + 1;
+      rewardsText = `${beli} beli\n${chests} C tier chest${chests > 1 ? 's' : ''}${resetToken ? '\n1 reset token' : ''}`;
+      if (sailProgress.difficulty === 'hard') rewardsText += '\n1 B tier chest';
+    } else if (session.episode === 4) {
+      const beli = Math.floor(Math.random() * 101) + 100;
+      const chests = 1;
+      rewardsText = `${beli} beli\n${chests} C tier chest${resetToken ? '\n1 reset token' : ''}`;
     } else {
       const beli = Math.floor(Math.random() * 151) + 100;
       const chests = Math.floor(Math.random() * 2) + 1;
       rewardsText = `${beli} beli\n${chests} C tier chest${chests > 1 ? 's' : ''}${resetToken ? '\n1 reset token' : ''}`;
+    }
+    // Append any data-driven episode rewards (from episodes_definitions.js)
+    if (session._extraEpisodeRewards && Array.isArray(session._extraEpisodeRewards) && session._extraEpisodeRewards.length) {
+      rewardsText += '\n' + session._extraEpisodeRewards.join('\n');
+      // cleanup
+      delete session._extraEpisodeRewards;
     }
     for (const cardId of rewards) {
       const card = getCardById(cardId);
@@ -223,13 +368,30 @@ async function endSailBattle(sessionId, channel, won) {
     const rows = [];
     if (session.episode === 2) {
       const btns = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`sail_battle_ep3:${session.userId}:start`).setLabel('Sail to Episode 3').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`sail_battle_ep3:${session.userId}:start`).setLabel('Next Episode').setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId(`sail:${session.userId}:map`).setLabel('Map').setStyle(ButtonStyle.Secondary)
       );
       rows.push(btns);
     } else if (session.episode === 3) {
       const btns = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`sail_battle_ep4:${session.userId}:start`).setLabel('Sail to Episode 4').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`sail_battle_ep4:${session.userId}:start`).setLabel('Next Episode').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`sail:${session.userId}:map`).setLabel('Map').setStyle(ButtonStyle.Secondary)
+      );
+      rows.push(btns);
+    } else if (session.episode === 4) {
+      const btns = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`sail_battle_ep5:${session.userId}:start`).setLabel('Next Episode').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`sail:${session.userId}:map`).setLabel('Map').setStyle(ButtonStyle.Secondary)
+      );
+      rows.push(btns);
+    } else if (session.episode === 5) {
+      const btns = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`sail_battle_ep6:${session.userId}:start`).setLabel('Next Episode').setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId(`sail:${session.userId}:map`).setLabel('Map').setStyle(ButtonStyle.Secondary)
+      );
+      rows.push(btns);
+    } else if (session.episode === 6) {
+      const btns = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId(`sail:${session.userId}:map`).setLabel('Map').setStyle(ButtonStyle.Secondary)
       );
       rows.push(btns);
@@ -247,7 +409,9 @@ async function endSailBattle(sessionId, channel, won) {
       sailProg.lastSail = new Date();
       await sailProg.save();
     } catch (e) { console.error('Failed to set sail cooldown after defeat:', e); }
-    await channel.send({ embeds: [embed] });
+      if (!session._skipDefeatEmbed) {
+        await channel.send({ embeds: [embed] });
+      }
   }
 
   global.SAIL_SESSIONS.delete(sessionId);
@@ -268,10 +432,22 @@ async function enemyAttack(session, channel) {
   let totalDamage = 0;
   const damageDetails = [];
   for (const enemy of aliveEnemies) {
-    const damage = Math.floor(Math.random() * (enemy.attackRange[1] - enemy.attackRange[0] + 1)) + enemy.attackRange[0];
-    target.health -= damage;
-    totalDamage += damage;
-    damageDetails.push(`${enemy.name} attacks for ${damage} damage!`);
+    let isMiss = false;
+    let damage = 0;
+    
+    // Check if target has future sight active
+    if (target.nextAttackGuaranteedDodge) {
+      isMiss = true;
+      target.nextAttackGuaranteedDodge = false;
+    }
+    
+    if (!isMiss) {
+      damage = Math.floor(Math.random() * (enemy.attackRange[1] - enemy.attackRange[0] + 1)) + enemy.attackRange[0];
+      target.health -= damage;
+      totalDamage += damage;
+    }
+    
+    damageDetails.push(isMiss ? `${enemy.name}'s attack was dodged!` : `${enemy.name} attacks for ${damage} damage!`);
     if (target.health < 0) target.health = 0;
     if (target.health <= 0) target.stamina = 0;
   }
@@ -281,27 +457,170 @@ async function enemyAttack(session, channel) {
   await channel.send({ embeds: [attackEmbed] });
 }
 
+async function handleSailHakiMenu(sessionId, charIdx, session, interaction) {
+  const card = session.cards[charIdx];
+  if (!card) {
+    try { await interaction.followUp({ content: 'Invalid character', ephemeral: true }); } catch (e) {}
+    return;
+  }
+
+  const haki = card.haki || { armament: { stars:0 }, observation:{stars:0}, conqueror:{stars:0} };
+  const opts = [];
+  if (haki.observation && haki.observation.advanced) opts.push({ id: 'futuresight', label: 'Future Sight', cost: 1, style: ButtonStyle.Primary });
+  if (haki.armament && haki.armament.advanced) opts.push({ id: 'ryou', label: 'Ryou', cost: 2, style: ButtonStyle.Danger });
+  if (haki.conqueror && haki.conqueror.stars > 0) opts.push({ id: 'conqueror', label: 'Conqueror Strike', cost: 2, style: ButtonStyle.Success });
+  if (haki.conqueror && haki.conqueror.present) opts.push({ id: 'conq_aoe', label: 'Conqueror AoE', cost: 2, style: ButtonStyle.Danger });
+
+  if (opts.length === 0) {
+    try { await interaction.followUp({ content: 'This character has no Haki abilities.', ephemeral: true }); } catch (e) {}
+    return;
+  }
+
+  const { EmbedBuilder, ActionRowBuilder, ButtonBuilder } = await import('discord.js');
+  const embed = new EmbedBuilder().setTitle(`${card.card.name} — Haki Menu`).setDescription('Choose a Haki ability to use. These do not consume your turn but cost stamina.').setColor(0x3498db);
+
+  const btns = opts.map(o => new ButtonBuilder().setCustomId(`sail_haki_use:${sessionId}:${charIdx}:${o.id}`).setLabel(`${o.label} (Cost: ${o.cost})`).setStyle(o.style));
+  const row = new ActionRowBuilder().addComponents(btns.slice(0,5));
+  try { await interaction.followUp({ embeds: [embed], components: [row], ephemeral: true }); } catch (e) {}
+
+  // create a short-lived collector on the interaction reply by listening to the channel
+  const collectorMsgFilter = (i) => i.user.id === session.userId && i.customId && i.customId.startsWith('sail_haki_use');
+  const collector2 = interaction.channel.createMessageComponentCollector({ filter: collectorMsgFilter, time: 20000 });
+  collector2.on('collect', async i => {
+    if (!i.customId.startsWith('sail_haki_use')) return;
+    try {
+      if (!i.deferred && !i.replied) {
+        await i.deferUpdate();
+      }
+    } catch (e) {
+      if (e && e.code === 10062) return; // Interaction expired, exit
+      try {
+        // If defer fails, try to reply instead
+        await i.reply({ content: "Error processing your action. Please try again.", ephemeral: true });
+      } catch (err) {
+        // Give up silently if both defer and reply fail
+      }
+      return;
+    }
+    const parts = i.customId.split(':');
+    const ability = parts[3];
+    try {
+      await performSailHakiAbility(sessionId, charIdx, ability, session, i);
+    } catch (err) {
+      console.error('performSailHakiAbility error', err);
+      try { await i.followUp({ content: 'An error occurred performing Haki ability.', ephemeral: true }); } catch (e) {}
+    }
+    collector2.stop();
+  });
+}
+
+async function performSailHakiAbility(sessionId, charIdx, ability, session, interaction) {
+  const card = session.cards[charIdx];
+  if (!card) return;
+  
+  if (ability === 'futuresight') {
+    if ((card.stamina || 0) < 1) { try { await interaction.followUp({ content: 'Not enough stamina for Future Sight.', ephemeral: true }); } catch (e) { try { await interaction.channel.send({ content: 'Not enough stamina for Future Sight.' }); } catch (err) {} } return; }
+    card.stamina = Math.max(0, card.stamina - 1);
+    card.nextAttackGuaranteedDodge = true;
+    try { await interaction.followUp({ content: `${interaction.user} used Future Sight on ${card.card.name}! It will dodge the next incoming attack.`, ephemeral: false }); } catch (e) { try { await interaction.channel.send({ content: `${interaction.user} used Future Sight on ${card.card.name}! It will dodge the next incoming attack.` }); } catch (err) {} }
+    try { await startSailTurn(sessionId, interaction.channel); } catch (e) {}
+    return;
+  }
+  if (ability === 'ryou') {
+    if ((card.stamina || 0) < 2) { try { await interaction.followUp({ content: 'Not enough stamina for Ryou.', ephemeral: true }); } catch (e) { try { await interaction.channel.send({ content: 'Not enough stamina for Ryou.' }); } catch (err) {} } return; }
+    card.stamina = Math.max(0, card.stamina - 2);
+    session.ryou = session.ryou || {};
+    session.ryou.cardIdx = charIdx;
+    session.ryou.remaining = 1;
+    try { await interaction.followUp({ content: `${interaction.user} used Ryou! Next incoming attack will redirect to ${card.card.name} and deal no damage.`, ephemeral: false }); } catch (e) { try { await interaction.channel.send({ content: `${interaction.user} used Ryou! Next incoming attack will redirect to ${card.card.name} and deal no damage.` }); } catch (err) {} }
+    try { await startSailTurn(sessionId, interaction.channel); } catch (e) {}
+    return;
+  }
+  if (ability === 'conqueror') {
+    if ((card.stamina || 0) < 2) { try { await interaction.followUp({ content: 'Not enough stamina for Conqueror.', ephemeral: true }); } catch (e) { try { await interaction.channel.send({ content: 'Not enough stamina for Conqueror.' }); } catch (err) {} } return; }
+    card.stamina = Math.max(0, card.stamina - 2);
+    const stars = (card.haki && card.haki.conqueror && card.haki.conqueror.stars) || 0;
+    const threshold = 100 + (stars * 10);
+    const knocked = [];
+    for (const e of session.enemies) {
+      if (e.health > 0 && e.health <= threshold) { e.health = 0; knocked.push(e.name); }
+    }
+    try { await interaction.followUp({ content: `Conqueror used! Knocked out: ${knocked.length ? knocked.join(', ') : 'None'}`, ephemeral: false }); } catch (e) { try { await interaction.channel.send({ content: `Conqueror used! Knocked out: ${knocked.length ? knocked.join(', ') : 'None'}` }); } catch (err) {} }
+    try { await startSailTurn(sessionId, interaction.channel); } catch (e) {}
+    return;
+  }
+  if (ability === 'conq_aoe') {
+    if ((card.stamina || 0) < 2) { try { await interaction.followUp({ content: 'Not enough stamina for Conqueror AoE.', ephemeral: true }); } catch (e) { try { await interaction.channel.send({ content: 'Not enough stamina for Conqueror AoE.' }); } catch (err) {} } return; }
+    card.stamina = Math.max(0, card.stamina - 2);
+    const stars = (card.haki && card.haki.conqueror && card.haki.conqueror.stars) || 0;
+    const base = 0.05; // 5% base even at 0 stars
+    const dmgPct = base + (stars * 0.10);
+    const dmg = Math.round(card.maxHealth * dmgPct);
+    for (const e of session.enemies) {
+      if (e.health > 0) {
+        e.health = Math.max(0, e.health - dmg);
+      }
+    }
+    try { await interaction.followUp({ content: `${interaction.user} used Advanced Conqueror AoE for ${dmg} damage to all enemies!`, ephemeral: false }); } catch (e) { try { await interaction.channel.send({ content: `${interaction.user} used Advanced Conqueror AoE for ${dmg} damage to all enemies!` }); } catch (err) {} }
+    try { await startSailTurn(sessionId, interaction.channel); } catch (e) {}
+    return;
+  }
+}
+
 async function performSailAttack(session, cardIndex, enemy, actionType, interaction) {
   const card = session.cards[cardIndex];
   let damage;
+  let isMiss = false;
+  
+  // Check for future sight dodge on the enemy
+  const hasFutureSight = enemy.nextAttackGuaranteedDodge;
+  
   if (actionType === 'attack') {
-    damage = Math.floor(Math.random() * (card.scaled.attackRange[1] - card.scaled.attackRange[0] + 1)) + card.scaled.attackRange[0];
+    const min = (card.scaled && card.scaled.attackRange && Number(card.scaled.attackRange[0])) || (card.card && card.card.attackRange && Number(card.card.attackRange[0])) || 1;
+    const max = (card.scaled && card.scaled.attackRange && Number(card.scaled.attackRange[1])) || (card.card && card.card.attackRange && Number(card.card.attackRange[1])) || Math.max(min, 1);
+    const finalMin = Math.max(1, Math.floor(min));
+    const finalMax = Math.max(finalMin, Math.floor(max));
+    damage = Math.floor(Math.random() * (finalMax - finalMin + 1)) + finalMin;
     card.stamina = Math.max(0, (card.stamina ?? 3) - 1);
   } else if (actionType === 'special') {
-    const special = card.scaled.specialAttack;
-    damage = Math.floor(Math.random() * (special.range[1] - special.range[0] + 1)) + special.range[0];
+    const special = card.scaled && card.scaled.specialAttack ? card.scaled.specialAttack : (card.card && card.card.specialAttack ? card.card.specialAttack : null);
+    const smin = special && special.range ? Number(special.range[0]) || 1 : 1;
+    const smax = special && special.range ? Number(special.range[1]) || smin : smin;
+    const finalSmin = Math.max(1, Math.floor(smin));
+    const finalSmax = Math.max(finalSmin, Math.floor(smax));
+    damage = Math.floor(Math.random() * (finalSmax - finalSmin + 1)) + finalSmin;
     card.stamina = Math.max(0, (card.stamina ?? 3) - 3);
     card.usedSpecial = true;
     card.skipNextTurnPending = true;
   }
+  
+  // Check if future sight blocks the attack
+  if (hasFutureSight) {
+    isMiss = true;
+    enemy.nextAttackGuaranteedDodge = false;
+  }
+  
   card.attackedLastTurn = true;
-  enemy.health -= damage;
-  if (enemy.health < 0) enemy.health = 0;
+  if (!isMiss) {
+    enemy.health -= damage;
+    if (enemy.health < 0) enemy.health = 0;
+  }
+  
   const resultEmbed = new EmbedBuilder()
     .setTitle(actionType === 'special' ? `Special Attack: ${card.scaled.specialAttack.name}` : 'Attack Result')
-    .setDescription(`${card.card.name} ${actionType}s ${enemy.name} for ${damage} damage!`);
+    .setDescription(isMiss ? `${card.card.name}'s ${actionType} was dodged by ${enemy.name}!` : `${card.card.name} ${actionType}s ${enemy.name} for ${damage} damage!`);
   if (actionType === 'special' && card.scaled.specialAttack.gif) resultEmbed.setImage(card.scaled.specialAttack.gif);
-  await interaction.update({ embeds: [resultEmbed], components: [] });
+  try {
+    await interaction.update({ embeds: [resultEmbed], components: [] });
+  } catch (e) {
+    if (e && e.code === 10062) return; // Interaction expired
+    try {
+      await interaction.reply({ content: "Error updating battle. Please try again.", ephemeral: true });
+    } catch (err) {
+      // Give up silently if both update and reply fail
+    }
+    return;
+  }
   setTimeout(async () => {
     await enemyAttack(session, interaction.channel);
     await startSailTurn(session.sessionId, interaction.channel);
@@ -309,178 +628,194 @@ async function performSailAttack(session, cardIndex, enemy, actionType, interact
 
 }
 
-async function startSailTurn(sessionId, channel) {
+export async function startSailTurn(sessionId, channel) {
   const session = global.SAIL_SESSIONS.get(sessionId);
   if (!session) return;
 
+  // Ensure basic session state
+  session.currentStageIndex = session.currentStageIndex ?? 0;
+  session.lifeIndex = session.lifeIndex ?? 0;
+
+  // Load episode definitions and current stage
+  const epMod = await import('./episodes_definitions.js');
+  const formatRewardsList = epMod.formatRewardsList || (epMod.default && epMod.default.formatRewardsList);
+  const episodeDefs = epMod.episodes || (epMod.default && epMod.default.episodes);
+  const currentEpisodeDef = episodeDefs && episodeDefs[session.episode];
+  if (!currentEpisodeDef) { await endSailBattle(sessionId, channel, false); return; }
+  const stage = currentEpisodeDef.stages && currentEpisodeDef.stages[session.currentStageIndex];
+  if (!stage) { await endSailBattle(sessionId, channel, true); return; }
+
+  // Determine location-based styling (author + color) for non-fight embeds
+  const locations = epMod.locations || (epMod.default && epMod.default.locations) || {};
+  const locEntry = Object.values(locations).find(l => l && Array.isArray(l.episodes) && l.episodes.includes(session.episode));
+  const defaultAuthor = (locations.orange_town && locations.orange_town.name) || 'Orange town - East Blue';
+  const defaultColor = (locations.orange_town && locations.orange_town.color) || 0xFA8628;
+
+  // Handle embed stages
+  if (stage.type === 'embed') {
+    try {
+      const authorName = (locEntry && locEntry.name) || defaultAuthor;
+      const color = (locEntry && locEntry.color) || defaultColor;
+      const embed = new EmbedBuilder().setTitle(stage.title || currentEpisodeDef.title || 'Episode').setDescription(stage.description || '').setColor(color).setAuthor({ name: authorName });
+      if (stage.image) embed.setImage(stage.image);
+      const components = [];
+      const buttons = [];
+      // attach reward preview if provided by stage or episode definition
+      try {
+        const rewardsForPreview = stage.rewards && stage.rewards.length ? stage.rewards : (currentEpisodeDef.rewards || []);
+        const rewardText = (typeof formatRewardsList === 'function') ? formatRewardsList(rewardsForPreview, session.difficulty) : '';
+        if (rewardText) {
+          const prev = embed.data.description || '';
+          embed.setDescription(prev + '\n\n' + rewardText + `\n\n**XP on start:** ${session.difficulty === 'hard' ? 30 : session.difficulty === 'medium' ? 20 : 10} to you and each team member.`);
+        }
+      } catch (e) {
+        // ignore formatting errors
+      }
+      if (session.currentStageIndex < (currentEpisodeDef.stages.length - 1)) {
+        buttons.push(new ButtonBuilder().setCustomId(`sail_next:${sessionId}:${session.currentStageIndex + 1}`).setLabel('Next Stage').setStyle(ButtonStyle.Secondary));
+      } else {
+        buttons.push(new ButtonBuilder().setCustomId(`sail_next:${sessionId}:claim`).setLabel('Claim Rewards').setStyle(ButtonStyle.Secondary));
+        if (typeof session.episode === 'number' && session.episode < 8) {
+          buttons.push(new ButtonBuilder().setCustomId(`sail_battle_ep${session.episode + 1}:${session.userId}:start`).setLabel('Next Episode').setStyle(ButtonStyle.Primary));
+        }
+      }
+      components.push(new ActionRowBuilder().addComponents(...buttons));
+      await channel.send({ embeds: [embed], components });
+    } catch (e) { console.error('startSailTurn embed error:', e); }
+    return;
+  }
+
+  // Handle accuracy stages
+  if (stage.type === 'accuracy') {
+    try {
+      const barLen = stage.barLen || 5;
+      const intervalMs = stage.intervalMs || 1000;
+      const duration = barLen * intervalMs;
+      let step = 0;
+      const authorName = (locEntry && locEntry.name) || defaultAuthor;
+      const color = (locEntry && locEntry.color) || defaultColor;
+      const embed = new EmbedBuilder().setTitle(stage.title || 'Accuracy Test').setDescription(stage.description || 'Click the button to stop the progress bar as close to the end as possible.').setColor(color).setAuthor({ name: authorName });
+      if (stage.image) embed.setImage(stage.image);
+      const btn = new ButtonBuilder().setCustomId(`sail_accuracy:${sessionId}:stop`).setLabel('Now!').setStyle(ButtonStyle.Primary);
+      const msg = await channel.send({ embeds: [embed], components: [new ActionRowBuilder().addComponents(btn)] });
+      session.accuracy = { start: Date.now(), duration, window: stage.successWindow || 2000, intervalMs, barLen };
+      session._accuracyMsgId = msg.id;
+      session._accuracyInterval = setInterval(async () => {
+        try {
+          step++;
+          const filled = Math.min(barLen, step);
+          const pct = Math.min(100, Math.round((filled / barLen) * 100));
+          const bar = '▰'.repeat(filled) + '▱'.repeat(barLen - filled);
+          const e = EmbedBuilder.from(embed).setDescription(`Progress: ${bar} ${pct}%`);
+          await msg.edit({ embeds: [e] }).catch(() => {});
+          if (step >= barLen) {
+            clearInterval(session._accuracyInterval); session._accuracyInterval = null;
+            try { await endSailBattle(sessionId, channel, false); } catch (e) {}
+          }
+        } catch (e) { console.error('Accuracy update error:', e); }
+      }, intervalMs);
+    } catch (e) { console.error('startSailTurn accuracy error:', e); }
+    return;
+  }
+
+  // Handle reward stages
+  if (stage.type === 'reward') {
+    try {
+      const authorName = (locEntry && locEntry.name) || defaultAuthor;
+      const color = (locEntry && locEntry.color) || defaultColor;
+      const embed = new EmbedBuilder().setTitle(stage.title || 'Rewards').setDescription(stage.description || '').setColor(color).setAuthor({ name: authorName });
+      if (stage.image) embed.setImage(stage.image);
+      const buttons = [new ButtonBuilder().setCustomId(`sail_next:${sessionId}:claim`).setLabel('Claim Rewards').setStyle(ButtonStyle.Secondary)];
+      if (typeof session.episode === 'number' && session.episode < 8) buttons.push(new ButtonBuilder().setCustomId(`sail_battle_ep${session.episode + 1}:${session.userId}:start`).setLabel('Next Episode').setStyle(ButtonStyle.Primary));
+      const row = new ActionRowBuilder().addComponents(...buttons);
+      await channel.send({ embeds: [embed], components: [row] });
+    } catch (e) { console.error('startSailTurn reward error:', e); }
+    return;
+  }
+
+  // Handle fight stages: ensure enemies set and render battle UI
+  if (stage.type === 'fight') {
+    try {
+      // Initialize enemies only once per stage to avoid resetting health each turn
+      if (session._stageInitialized !== session.currentStageIndex) {
+        const multiplier = session.difficulty === 'hard' ? 1.5 : session.difficulty === 'medium' ? 1.25 : 1;
+        session.enemies = (stage.enemies || []).map(e => ({
+          id: e.id || null,
+          name: e.name || e.id || 'Enemy',
+          health: Math.round((e.health || 100) * multiplier),
+          maxHealth: Math.round((e.health || 100) * multiplier),
+          attackRange: [Math.ceil((e.attack && e.attack[0] || 10) * multiplier), Math.ceil((e.attack && e.attack[1] || 15) * multiplier)],
+          power: Math.ceil((e.attack && e.attack[0] || 10) * multiplier),
+          special: e.special || null
+        }));
+        session._stageInitialized = session.currentStageIndex;
+      }
+    } catch (e) { console.error('startSailTurn fight setup error:', e); }
+  }
+
+  // Common battle UI rendering
+  // prepare lifeIndex and stamina
   if (!session.cards || session.cards.length === 0) return;
   if (session.lifeIndex == null || session.lifeIndex >= session.cards.length || session.cards[session.lifeIndex].health <= 0) {
     const idx = session.cards.findIndex(c => c.health > 0);
     session.lifeIndex = idx === -1 ? session.cards.length : idx;
   }
-
   session.cards.forEach(c => { c.skipThisTurn = false; });
   session.cards.forEach(c => { if (c.skipNextTurnPending) { c.skipThisTurn = true; c.skipNextTurnPending = false; } });
+  session.cards.forEach(c => { if (!c.attackedLastTurn) c.stamina = Math.min(3, (c.stamina ?? 3) + 1); c.attackedLastTurn = false; if (c.health <= 0) c.stamina = 0; });
+  if (session.lifeIndex >= session.cards.length) { await endSailBattle(sessionId, channel, false); return; }
 
-  session.cards.forEach(c => {
-    if (!c.attackedLastTurn) {
-      c.stamina = Math.min(3, (c.stamina ?? 3) + 1);
-    }
-    c.attackedLastTurn = false;
-  });
-
-  // Ensure knocked-out cards have no stamina (stamina is irrelevant when dead)
-  session.cards.forEach(c => { if (c.health <= 0) c.stamina = 0; });
-
-  if (session.lifeIndex >= session.cards.length) {
-    await endSailBattle(sessionId, channel, false);
-    return;
-  }
-
-  const aliveEnemies = session.enemies.filter(e => e.health > 0);
+  const aliveEnemies = (session.enemies || []).filter(e => e.health > 0);
   if (aliveEnemies.length === 0) {
-    if (session.episode === 2) {
-      // Episode 2 progression: Phase 1 = Helmeppo, Phase 2 = three Marines, Phase 3 = (if refused) Zoro final
-      if (session.phase === 1) {
-        session.enemies = [ { name: 'Helmeppo', health: 90, maxHealth: 90, attackRange: [12,18], power: 15 } ];
-        session.phase = 2;
-      } else if (session.phase === 2) {
-        session.enemies = [
-          { name: 'Marine', health: 80, maxHealth: 80, attackRange: [10,16], power: 12 },
-          { name: 'Marine', health: 80, maxHealth: 80, attackRange: [10,16], power: 12 },
-          { name: 'Marine', health: 80, maxHealth: 80, attackRange: [10,16], power: 12 }
-        ];
-        session.phase = 3;
-      } else if (session.phase === 3 && session.hasZoro === false) {
-        // Spawn final Zoro encounter for players who refused to help earlier
-        session.enemies = [ { name: 'Roronoa Zoro', health: 210, maxHealth: 210, attackRange: [25,50], power: 35, specialAttack: { name: 'Oni Giri', range: [85,135] } } ];
-        session.phase = 4;
-        session.zoroFinal = true;
-      } else {
-        await endSailBattle(sessionId, channel, true);
-        return;
-      }
-    } else if (session.episode === 3) {
-      // Episode 3 progression: three Marines then Axe-hand Morgan
-      if (session.phase === 1) {
-        session.enemies = [
-          { name: 'Marine', health: 65, maxHealth: 65, attackRange: [6,12], power: 8 },
-          { name: 'Marine', health: 65, maxHealth: 65, attackRange: [6,12], power: 8 },
-          { name: 'Marine', health: 65, maxHealth: 65, attackRange: [6,12], power: 8 }
-        ];
-        session.phase = 2;
-      } else if (session.phase === 2) {
-        session.enemies = [{ name: 'Axe-hand Morgan', health: 170, maxHealth: 170, attackRange: [15,35], power: 25 }];
-        session.phase = 3;
-      } else {
-        await endSailBattle(sessionId, channel, true);
-        return;
-      }
-    } else {
-      if (session.phase === 1) {
-        session.enemies = [{ name: 'Poppoko', health: 75, maxHealth: 75, attackRange: [10,15], power: 10 }];
-        session.phase = 2;
-      } else if (session.phase === 2) {
-        session.enemies = [{ name: 'Alvida', health: 120, maxHealth: 120, attackRange: [10,20], power: 20 }];
-        session.phase = 3;
-      } else {
-        await endSailBattle(sessionId, channel, true);
-        return;
-      }
-    }
-
-    const multiplier = session.difficulty === 'hard' ? 1.5 : session.difficulty === 'medium' ? 1.25 : 1;
-    session.enemies.forEach(enemy => {
-      enemy.health = roundNearestFive(enemy.health * multiplier);
-      enemy.maxHealth = enemy.health;
-      enemy.attackRange = [Math.ceil(enemy.attackRange[0] * multiplier), Math.ceil(enemy.attackRange[1] * multiplier)];
-      enemy.power = Math.ceil(enemy.power * multiplier);
-    });
-  }
-
-  // If the current side has no playable cards (all exhausted or skipped), auto-skip this turn
-  const hasPlayable = session.cards.some(c => c.health > 0 && !(c.skipThisTurn) && ((c.stamina ?? 3) > 0));
-  if (!hasPlayable) {
-    // Inform player why enemies acted twice
-    try { await channel.send({ content: "You had no stamina to act; the enemies attacked while you couldn't respond." }); } catch (e) {}
-    // let enemies act and continue
-    await enemyAttack(session, channel);
+    // advance to next stage (clear stage init so next stage initializes properly)
+    session.currentStageIndex++;
+    session._stageInitialized = null;
     await startSailTurn(sessionId, channel);
     return;
   }
 
   const embed = new EmbedBuilder()
     .setTitle('Sail Battle')
-    .setDescription(`Phase ${session.phase}: Fight!`)
+    .setDescription(`Stage: ${stage.title || 'Fight'} (Episode ${session.episode})`)
     .addFields(
       { name: 'Your Team', value: session.cards.map((c, idx) => `**${idx + 1}. ${c.card.name}** — HP: ${c.health}/${c.maxHealth} • Stamina: ${c.stamina ?? 3}/3`).join('\n'), inline: false },
       { name: 'Enemies', value: session.enemies.map(e => `**${e.name}** — HP: ${e.health}/${e.maxHealth}`).join('\n'), inline: false }
     );
 
-  const attackButtons = session.cards.map((c, idx) =>
-    new ButtonBuilder()
-      .setCustomId(`sail_selectchar:${sessionId}:${idx}`)
-      .setLabel(`${c.card.name}`)
-      .setStyle(ButtonStyle.Primary)
-      .setDisabled(c.health <= 0 || (c.stamina ?? 3) <= 0)
-  );
-
-  const hakiButtons = session.cards.map((c, idx) =>
-    new ButtonBuilder()
-      .setCustomId(`sail_haki:${sessionId}:${idx}`)
-      .setLabel('Haki')
-      .setStyle(ButtonStyle.Primary)
-      .setDisabled(c.health <= 0 || (c.stamina ?? 3) <= 0)
-  );
-
-  const healButton = new ButtonBuilder()
-    .setCustomId(`sail_heal:${sessionId}`)
-    .setLabel('Heal')
-    .setStyle(ButtonStyle.Success);
+  const attackButtons = session.cards.map((c, idx) => new ButtonBuilder().setCustomId(`sail_selectchar:${sessionId}:${idx}`).setLabel(`${c.card.name}`).setStyle(ButtonStyle.Primary).setDisabled(c.health <= 0 || (c.stamina ?? 3) <= 0));
+  const anyHakiPlayable = session.cards.some(card => (card.haki && (card.haki.armament.present || card.haki.observation.present || card.haki.conqueror.present)) && card.health > 0 && !(typeof card.stamina === 'number' && card.stamina <= 0));
+  const hakiButton = new ButtonBuilder().setCustomId(`sail_haki:${sessionId}:all`).setLabel('Haki').setStyle(ButtonStyle.Secondary).setDisabled(!anyHakiPlayable);
+  const healButton = new ButtonBuilder().setCustomId(`sail_heal:${sessionId}`).setLabel('Heal').setStyle(ButtonStyle.Success);
 
   const rows = [];
-  for (let i = 0; i < attackButtons.length; i += 5) {
-    rows.push(new ActionRowBuilder().addComponents(attackButtons.slice(i, i + 5)));
-  }
-  for (let i = 0; i < hakiButtons.length; i += 5) {
-    rows.push(new ActionRowBuilder().addComponents(hakiButtons.slice(i, i + 5)));
-  }
+  for (let i = 0; i < attackButtons.length; i += 5) rows.push(new ActionRowBuilder().addComponents(attackButtons.slice(i, i + 5)));
+  rows.push(new ActionRowBuilder().addComponents(hakiButton));
   rows.push(new ActionRowBuilder().addComponents(healButton));
 
-  // Prevent duplicate immediate prompts (debounce very short repeated calls)
-  const now = Date.now();
-  if (session._lastEmbedSent && (now - session._lastEmbedSent) < 500) {
-    return;
-  }
+  // debounce
+  const now = Date.now(); if (session._lastEmbedSent && (now - session._lastEmbedSent) < 500) return;
   const msg = await channel.send({ embeds: [embed], components: rows });
-  session.msgId = msg.id;
-  session._lastEmbedSent = Date.now();
-  // clear any existing turn timeout
-  try { if (session.turnTimer) { clearTimeout(session.turnTimer); session.turnTimer = null; } } catch (e) {}
+  session.msgId = msg.id; session._lastEmbedSent = Date.now();
 
-  // If there are playable actions, start a 30s timeout that causes an auto-loss
+  // turn timeout
+  const hasPlayable = session.cards.some(c => c.health > 0 && !(c.skipThisTurn) && ((c.stamina ?? 3) > 0));
+  if (!hasPlayable) { try { await channel.send({ content: "You had no stamina to act; the enemies attacked while you couldn't respond." }); } catch (e) {} await enemyAttack(session, channel); await startSailTurn(sessionId, channel); return; }
   if (hasPlayable) {
-    session.turnTimer = setTimeout(async () => {
-      try {
-        const s = global.SAIL_SESSIONS.get(sessionId);
-        if (!s) return;
-        // only act if the message hasn't been superseded
-        if (s.msgId === msg.id) {
-          // mark timeout reason so endSailBattle can show accurate message
-          s.timedOut = true;
-          await endSailBattle(sessionId, channel, false);
-        }
-      } catch (e) { console.error('Sail turn timeout error:', e); }
-    }, 45000);
+    try { if (session.turnTimer) { clearTimeout(session.turnTimer); session.turnTimer = null; } } catch (e) {}
+    session.turnTimer = setTimeout(async () => { try { const s = global.SAIL_SESSIONS.get(sessionId); if (!s) return; if (s.msgId === msg.id) { s.timedOut = true; await endSailBattle(sessionId, channel, false); } } catch (e) { console.error('Sail turn timeout error:', e); } }, 45000);
   }
 }
+
+// expose these functions to other modules (episodeInteractionCreate) that call them at runtime
+try { global.startSailTurn = startSailTurn; } catch (e) {}
+try { global.endSailBattle = endSailBattle; } catch (e) {}
 
 export async function execute(interaction, client) {
   try {
     // sail difficulty select
     if (interaction.isSelectMenu && interaction.isSelectMenu()) {
     const id = interaction.customId || "";
-    if (id.startsWith("sail_difficulty:")) {
+    if (id.startsWith("sail_difficulty:") || id.startsWith("settings_difficulty:")) {
       const parts = id.split(":");
       const userId = parts[1];
       if (interaction.user.id !== userId) return interaction.reply({ content: "Only the original requester can use this select.", ephemeral: true });
@@ -493,15 +828,31 @@ export async function execute(interaction, client) {
       sailProgress.difficulty = selected;
       await sailProgress.save();
 
-      await interaction.reply({ content: `Difficulty set to ${selected}.`, flags: MessageFlags.Ephemeral });
+      // Try to update the original message's embed color (the select menu lives on the episode 0 message)
+      try {
+        const msg = interaction.message;
+        let color = selected === 'hard' ? 0xe74c3c : (selected === 'medium' ? 0xf1c40f : 0x2ecc71);
+        if (msg && msg.embeds && msg.embeds[0]) {
+          const e = EmbedBuilder.from(msg.embeds[0]).setColor(color);
+          // preserve components
+          const comps = msg.components || [];
+          await interaction.update({ embeds: [e], components: comps });
+          try { await interaction.followUp({ content: `Difficulty set to ${selected}.`, ephemeral: true }); } catch (e) {}
+          return;
+        }
+      } catch (e) {
+        // fall back to ephemeral reply
+      }
+
+      await interaction.reply({ content: `Difficulty set to ${selected}.`, ephemeral: true });
       return;
     }
   }
 
-  if (interaction.isButton()) {
+    if (interaction.isButton()) {
       const id = interaction.customId || "";
       // only handle known prefixes (include shop_ and duel_). Let per-message duel_* collectors handle duel interactions.
-      if (!id.startsWith("info_") && !id.startsWith("collection_") && !id.startsWith("quest_") && !id.startsWith("help_") && !id.startsWith("drop_claim") && !id.startsWith("shop_") && !id.startsWith("duel_") && !id.startsWith("leaderboard_") && !id.startsWith("sail:") && !id.startsWith("sail_battle:") && !id.startsWith("sail_battle_ep2:") && !id.startsWith("sail_battle_ep3:") && !id.startsWith("sail_ep2_choice:") && !id.startsWith("sail_selectchar:") && !id.startsWith("sail_chooseaction:") && !id.startsWith("sail_selecttarget:") && !id.startsWith("sail_heal:") && !id.startsWith("sail_heal_item:") && !id.startsWith("sail_heal_card:") && !id.startsWith("sail_haki:") && !id.startsWith("map_nav:")) return;
+    if (!id.startsWith("info_") && !id.startsWith("collection_") && !id.startsWith("quest_") && !id.startsWith("help_") && !id.startsWith("drop_claim") && !id.startsWith("shop_") && !id.startsWith("duel_") && !id.startsWith("leaderboard_") && !id.startsWith("sail:") && !id.startsWith("sail_battle:") && !id.startsWith("sail_battle_ep1:") && !id.startsWith("sail_battle_ep2:") && !id.startsWith("sail_battle_ep3:") && !id.startsWith("sail_battle_ep4:") && !id.startsWith("sail_battle_ep5:") && !id.startsWith("sail_battle_ep6:") && !id.startsWith("sail_battle_ep7:") && !id.startsWith("sail_battle_ep8:") && !id.startsWith("sail_accuracy:") && !id.startsWith("sail_ep2_choice:") && !id.startsWith("sail_ep5_choice:") && !id.startsWith("sail_ep6_choice:") && !id.startsWith("sail_selectchar:") && !id.startsWith("sail_chooseaction:") && !id.startsWith("sail_selecttarget:") && !id.startsWith("sail_heal:") && !id.startsWith("sail_heal_item:") && !id.startsWith("sail_heal_card:") && !id.startsWith("sail_haki:") && !id.startsWith("sail_next:") && !id.startsWith("map_nav:")) return;
       // ignore duel_* here so message-level collectors in `commands/duel.js` receive them
       if (id.startsWith("duel_")) return;
 
@@ -509,6 +860,26 @@ export async function execute(interaction, client) {
       if (parts.length < 2) return;
       const action = parts[0];
       const ownerId = parts[1];
+
+      // handle sail_next buttons (stage progression via stage index)
+      if (action === 'sail_next') {
+        const sessionId = parts[1];
+        const stageIndexPart = parts[2];
+        const session = global.SAIL_SESSIONS.get(sessionId);
+        if (!session) { try { await interaction.reply({ content: 'Session expired or not found.', ephemeral: true }); } catch (e) {} return; }
+        if (interaction.user.id !== session.userId) { try { await interaction.reply({ content: 'Only the original requester can advance the stage.', ephemeral: true }); } catch (e) {} return; }
+        try { if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate(); } catch (e) {}
+        if (stageIndexPart === 'claim') {
+          await endSailBattle(sessionId, interaction.channel, true);
+          return;
+        }
+        const nextStageIndex = parseInt(stageIndexPart);
+        if (!isNaN(nextStageIndex)) {
+          session.currentStageIndex = nextStageIndex;
+          await startSailTurn(sessionId, interaction.channel);
+        }
+        return;
+      }
 
       // HANDLE DROP CLAIMS: drop_claim:<token>
       if (id.startsWith("drop_claim")) {
@@ -752,36 +1123,72 @@ export async function execute(interaction, client) {
               }
             } catch (e) { /* ignore parse errors */ }
           }
-          // Progress to next episode
+          // Progress to next episode — use episode definitions and preserve XP awarding
           if (sailProgress.progress === 0) {
             sailProgress.progress = 1;
             const stars = sailProgress.difficulty === 'medium' ? 2 : sailProgress.difficulty === 'hard' ? 3 : 1;
             sailProgress.stars.set('1', stars);
             await sailProgress.save();
 
-              // compute xp amount based on difficulty
-              const xpAmount = sailProgress.difficulty === 'hard' ? 30 : sailProgress.difficulty === 'medium' ? 20 : 10;
+            // compute xp amount based on difficulty
+            const xpAmount = sailProgress.difficulty === 'hard' ? 30 : sailProgress.difficulty === 'medium' ? 20 : 10;
 
-              // Send episode 1 embed (include XP info) - title format matches Episode 0 style
-              const embed = new EmbedBuilder()
-                .setColor('Blue')
-                .setTitle(`**I'm Luffy! — Episode 1**`)
-                .setDescription(`Luffy is found floating at sea by a cruise ship. After repelling an invasion by the Alvida Pirates, he meets a new ally, their chore boy Koby.\n\n**Possible rewards:**\n100 - 250 beli\n1 - 2 C tier chest${sailProgress.difficulty === 'hard' ? '\n1x Koby card\n1x Alvida card (Exclusive to Hard mode)\n1x Heppoko card (Exclusive to Hard mode)\n1x Peppoko card (Exclusive to Hard mode)\n1x Poppoko card (Exclusive to Hard mode)\n1x Alvida Pirates banner blueprint (C rank Item card, signature: alvida pirates, boosts stats by +5%)' : '\n1x Koby card'}${Math.random() < 0.5 ? '\n1 reset token' : ''}\n\n*XP awarded: +${xpAmount} to user and each team card.*`)
-                .setImage('https://files.catbox.moe/zlda8y.webp');
+            // Award XP to user and team cards if not already awarded for this difficulty
+            try {
+              const ProgressModel = (await import('../models/Progress.js')).default;
+              const Balance = (await import('../models/Balance.js')).default;
+              const Inventory = (await import('../models/Inventory.js')).default;
+              let progressDoc = await ProgressModel.findOne({ userId }) || new ProgressModel({ userId, team: [], cards: new Map() });
+              if (!progressDoc.cards || typeof progressDoc.cards.get !== 'function') progressDoc.cards = new Map(Object.entries(progressDoc.cards || {}));
+              if (!sailProgress.awardedXp || !sailProgress.awardedXp[sailProgress.difficulty]) {
+                progressDoc.userXp = (progressDoc.userXp || 0) + xpAmount;
+                let levelsGained = 0;
+                while (progressDoc.userXp >= 100) { progressDoc.userXp -= 100; progressDoc.userLevel = (progressDoc.userLevel || 1) + 1; levelsGained++; }
+                if (levelsGained > 0) {
+                  const bal = await Balance.findOne({ userId }) || new Balance({ userId });
+                  const inv = await Inventory.findOne({ userId }) || new Inventory({ userId });
+                  let oldLevel = progressDoc.userLevel - levelsGained;
+                  for (let lvl = oldLevel + 1; lvl <= progressDoc.userLevel; lvl++) {
+                    bal.balance += lvl * 50;
+                    const rankIndex = Math.floor((lvl - 1) / 10);
+                    const ranks = ['C','B','A','S'];
+                    const currentRank = ranks[rankIndex] || 'S';
+                    const prevRank = ranks[rankIndex - 1];
+                    const chance = (lvl % 10 || 10) * 10;
+                    if (Math.random() * 100 < chance) { inv.chests[currentRank] += 1; } else if (prevRank) { inv.chests[prevRank] += 1; }
+                  }
+                  await bal.save(); await inv.save();
+                }
+                for (const cardId of progressDoc.team || []) {
+                  let entry = progressDoc.cards.get(cardId) || { count:0, xp:0, level:0 };
+                  if (!entry.count) entry.count = 1;
+                  entry.xp = entry.xp || 0;
+                  let totalXp = (entry.xp || 0) + xpAmount; let newLevel = entry.level || 0;
+                  while (totalXp >= 100) { totalXp -= 100; newLevel += 1; }
+                  entry.xp = totalXp; entry.level = newLevel; progressDoc.cards.set(cardId, entry);
+                  progressDoc.markModified && progressDoc.markModified('cards');
+                }
+                await progressDoc.save();
+                sailProgress.awardedXp = sailProgress.awardedXp || {}; sailProgress.awardedXp[sailProgress.difficulty] = true; await sailProgress.save();
+              }
+            } catch (e) { console.error('Error awarding XP for Episode 1 start:', e); }
 
-            const buttons = new ActionRowBuilder()
-              .addComponents(
-                new ButtonBuilder()
-                  .setCustomId(`sail_battle:${userId}:ready`)
-                  .setLabel("I'm ready!")
-                  .setStyle(ButtonStyle.Primary),
-                new ButtonBuilder()
-                  .setCustomId(`sail:${userId}:map`)
-                  .setLabel('Map')
-                  .setStyle(ButtonStyle.Secondary)
+            // Send episode 1 embed from episode definitions
+            try {
+              const epModule = await import('../events/episodes_definitions.js');
+              const epDef = (epModule && (epModule.episodes || (epModule.default && epModule.default.episodes))) ? (epModule.episodes || epModule.default.episodes)[1] : null;
+              const diffColor = sailProgress.difficulty === 'easy' ? 0x2ecc71 : (sailProgress.difficulty === 'medium' ? 0xf1c40f : 0xe74c3c);
+              const embed = new EmbedBuilder().setColor(diffColor).setTitle(epDef ? (epDef.title || "Episode 1") : "I'm Luffy! — Episode 1");
+              const desc = epDef && epDef.summary && String(epDef.summary).trim().length > 0 ? epDef.summary : `Luffy is found floating at sea by a cruise ship...`;
+              embed.setDescription(desc);
+              const img = epDef && epDef.image && String(epDef.image).trim().length > 0 ? epDef.image : 'https://files.catbox.moe/zlda8y.webp';
+              embed.setImage(img);
+              const buttons = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId(`sail_battle_ep1:${userId}:start`).setLabel("I'm ready!").setStyle(ButtonStyle.Primary),
+                new ButtonBuilder().setCustomId(`sail:${userId}:map`).setLabel('Map').setStyle(ButtonStyle.Secondary)
               );
-
-            await interaction.update({ embeds: [embed], components: [buttons] });
+              await interaction.update({ embeds: [embed], components: [buttons] });
+            } catch (e) { console.error('Failed to load episode definitions for ep1:', e); }
           } else if (sailProgress.progress === 1) {
             // Do not auto-advance to Episode 2 here. Require completing Episode 1 first.
             await interaction.reply({ content: 'You must complete Episode 1 to unlock Episode 2. Use the "I\'m ready!" button on Episode 1 to start the battle.', ephemeral: true });
@@ -937,8 +1344,9 @@ export async function execute(interaction, client) {
             const finalHealth = roundNearestFive(Math.round(health * (hakiApplied.haki.armament.multiplier || 1)));
             if (special && special.range) special.range = roundRangeToFive([Math.round(special.range[0] || 0), Math.round(special.range[1] || 0)]);
 
-            const hakiParsed = parseHaki(card);
-            return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, stamina: 3, usedSpecial: false, attackedLastTurn: false, haki: hakiParsed, dodgeChance: (hakiParsed.observation.stars || 0) * 0.05 };
+            // Use haki info returned from applyHakiStatBoosts so per-owner stars are present
+            const hakiFinal = hakiApplied.haki || parseHaki(card);
+            return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, stamina: 3, usedSpecial: false, attackedLastTurn: false, haki: hakiFinal, dodgeChance: (hakiFinal.observation.stars || 0) * 0.05 };
           });
 
           global.SAIL_SESSIONS.set(sessionId, {
@@ -992,6 +1400,29 @@ export async function execute(interaction, client) {
         }
       }
 
+      // Handle sail_battle_ep1 buttons
+      if (action === "sail_battle_ep1") {
+        const userId = ownerId;
+        const subaction = parts[2];
+
+        if (interaction.user.id !== userId) {
+          await interaction.reply({ content: "Only the original requester can use these buttons.", ephemeral: true });
+          return;
+        }
+
+        if (subaction === "start") {
+          try { if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate(); } catch (e) {}
+          try {
+            console.log('Calling startEpisode for ep1 for', userId);
+            const sessionId = await startEpisode(userId, 1, interaction);
+            if (sessionId) await startSailTurn(sessionId, interaction.channel);
+          } catch (e) {
+            console.error('Failed to start Episode1:', e && e.message ? e.message : e);
+            try { await interaction.followUp({ content: 'Error starting Episode 1 battle.', ephemeral: true }); } catch (err) {}
+          }
+        }
+      }
+
       // Handle sail_battle_ep3 buttons
       if (action === "sail_battle_ep3") {
         const userId = ownerId;
@@ -1028,6 +1459,116 @@ export async function execute(interaction, client) {
         }
       }
 
+      if (action === "sail_battle_ep4") {
+        const userId = ownerId;
+        const subaction = parts[2];
+
+        if (interaction.user.id !== userId) {
+          await interaction.reply({ content: "Only the original requester can use these buttons.", ephemeral: true });
+          return;
+        }
+
+        if (subaction === "start") {
+          // Acknowledge and start Episode 4 immediately (skip redundant intermediate embed)
+          try { if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate(); } catch (e) {}
+          try {
+            console.log('Calling startEpisode4Stage2 for', userId);
+            await startEpisode4Stage2(userId, interaction);
+          } catch (e) {
+            console.error('Failed to start Episode4 Stage2:', e && e.message ? e.message : e);
+            try { await interaction.followUp({ content: 'Error starting Episode 4 battle.', ephemeral: true }); } catch (err) {}
+          }
+        }
+      }
+
+      if (action === "sail_battle_ep5") {
+        const userId = ownerId;
+        const subaction = parts[2];
+
+        if (interaction.user.id !== userId) {
+          await interaction.reply({ content: "Only the original requester can use these buttons.", ephemeral: true });
+          return;
+        }
+
+        if (subaction === "start") {
+          try { if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate(); } catch (e) {}
+          try {
+            console.log('Calling startEpisode5Stage2 for', userId);
+            await startEpisode5Stage2(userId, interaction);
+          } catch (e) {
+            console.error('Failed to start Episode5 Stage2:', e && e.message ? e.message : e);
+            try { await interaction.followUp({ content: 'Error starting Episode 5 battle.', ephemeral: true }); } catch (err) {}
+          }
+        }
+      }
+
+      if (action === "sail_battle_ep6") {
+        const userId = ownerId;
+        const subaction = parts[2];
+
+        if (interaction.user.id !== userId) {
+          await interaction.reply({ content: "Only the original requester can use these buttons.", ephemeral: true });
+          return;
+        }
+
+        if (subaction === "start") {
+          try { if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate(); } catch (e) {}
+          try {
+            console.log('Calling startEpisode6Stage2 for', userId);
+            await startEpisode6Stage2(userId, interaction);
+          } catch (e) {
+            console.error('Failed to start Episode6 Stage2:', e && e.message ? e.message : e);
+            try { await interaction.followUp({ content: 'Error starting Episode 6 battle.', ephemeral: true }); } catch (err) {}
+          }
+        }
+      }
+
+      // Handle sail_battle_ep7 buttons
+      if (action === "sail_battle_ep7") {
+        const userId = ownerId;
+        const subaction = parts[2];
+
+        if (interaction.user.id !== userId) {
+          await interaction.reply({ content: "Only the original requester can use these buttons.", ephemeral: true });
+          return;
+        }
+
+        if (subaction === "start") {
+          try { if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate(); } catch (e) {}
+          try {
+            console.log('Calling startEpisode for ep7 for', userId);
+            const sessionId = await startEpisode(userId, 7, interaction);
+            if (sessionId) await startSailTurn(sessionId, interaction.channel);
+          } catch (e) {
+            console.error('Failed to start Episode7 Stage2:', e && e.message ? e.message : e);
+            try { await interaction.followUp({ content: 'Error starting Episode 7 battle.', ephemeral: true }); } catch (err) {}
+          }
+        }
+      }
+
+      // Handle sail_battle_ep8 buttons
+      if (action === "sail_battle_ep8") {
+        const userId = ownerId;
+        const subaction = parts[2];
+
+        if (interaction.user.id !== userId) {
+          await interaction.reply({ content: "Only the original requester can use these buttons.", ephemeral: true });
+          return;
+        }
+
+        if (subaction === "start") {
+          try { if (!interaction.deferred && !interaction.replied) await interaction.deferUpdate(); } catch (e) {}
+          try {
+            console.log('Calling startEpisode for ep8 for', userId);
+            const sessionId = await startEpisode(userId, 8, interaction);
+            if (sessionId) await startSailTurn(sessionId, interaction.channel);
+          } catch (e) {
+            console.error('Failed to start Episode8 Stage2:', e && e.message ? e.message : e);
+            try { await interaction.followUp({ content: 'Error starting Episode 8 battle.', ephemeral: true }); } catch (err) {}
+          }
+        }
+      }
+
       // Handle map navigation buttons (map_nav:back|next:<userId>)
       if (action === 'map_nav') {
         const sub = parts[2]; // back or next
@@ -1051,23 +1592,23 @@ export async function execute(interaction, client) {
 
         const getStars = (ep) => { try { return sailProgress.stars.get(String(ep)) || 0; } catch (e) { return 0; } };
 
-        // compute East Blue totals (exclude warship)
+        // compute East Blue totals (exclude warship) and split into 2 pages
+        const eastBlueIslands = islands.filter(isl => !isl.excludeFromEastBlue);
         let eastBlueTotal = 0; let eastBlueMax = 0;
-        for (const isl of islands) {
-          if (isl.excludeFromEastBlue) continue;
+        for (const isl of eastBlueIslands) {
           const count = isl.end - isl.start + 1; eastBlueMax += count * 3;
           for (let e = isl.start; e <= isl.end; e++) eastBlueTotal += getStars(e);
         }
         const filledEast = eastBlueMax === 0 ? 0 : Math.floor((eastBlueTotal / eastBlueMax) * 8);
         const eastBar = '▰'.repeat(filledEast) + '▱'.repeat(8 - filledEast);
 
-        // split islands into two pages to avoid long output
+        // split East Blue islands into two pages
         const page = sub === 'next' ? 2 : 1;
-        const splitIndex = Math.ceil(islands.length / 2);
-        const pageIslands = page === 1 ? islands.slice(0, splitIndex) : islands.slice(splitIndex);
+        const midPoint = Math.ceil(eastBlueIslands.length / 2);
+        const pageIslands = page === 1 ? eastBlueIslands.slice(0, midPoint) : eastBlueIslands.slice(midPoint);
 
         const fields = [];
-        fields.push({ name: 'East Blue saga', value: `${eastBlueTotal}/${eastBlueMax} ✭`, inline: false });
+        fields.push({ name: 'East Blue saga', value: `[${eastBlueTotal}/${eastBlueMax}]✭`, inline: false });
         fields.push({ name: '\u200b', value: eastBar, inline: false });
 
         for (const isl of pageIslands) {
@@ -1083,11 +1624,11 @@ export async function execute(interaction, client) {
             const stars = getStars(e);
             let status = '';
             if (e > progress) status = ' ⛓';
-            else if (e < progress) status = ` ${stars}/3 ✭`;
+            else if (e < progress) status = ` [${stars}/3]✭`;
             episodeLines += `Episode ${e}${status}\n`;
           }
 
-          fields.push({ name: `**${isl.name}** ${islandStars}/${islandMax} ✭`, value: islandBar, inline: false });
+          fields.push({ name: `**${isl.name}** [${islandStars}/${islandMax}]✭`, value: islandBar, inline: false });
           fields.push({ name: '\u200b', value: episodeLines.trim(), inline: false });
         }
 
@@ -1162,13 +1703,76 @@ export async function execute(interaction, client) {
         }
       }
 
+      // Handle accuracy button (sail_accuracy:<sessionId>:stop)
+      if (action === 'sail_accuracy') {
+        const sessionId = parts[1];
+        try { await handleAccuracy(sessionId, interaction); } catch (e) { console.error('Accuracy handler failed:', e); }
+        return;
+      }
+
+      // Handle sail_ep5_choice buttons
+      if (action === "sail_ep5_choice") {
+        const userId = ownerId;
+        const choice = parts[2];
+
+        if (interaction.user.id !== userId) {
+          await interaction.reply({ content: "Only the original requester can use these buttons.", flags: MessageFlags.Ephemeral });
+          return;
+        }
+
+        try { await interaction.deferUpdate(); } catch (e) {}
+
+        const Progress = (await import("../models/Progress.js")).default;
+        const progress = await Progress.findOne({ userId });
+
+        if (choice === "no") {
+          // Nami refuses: -1 karma and secret death stage
+          progress.karma = (progress.karma || 0) - 1;
+          await progress.save();
+          // mark session to secretDeath by setting phase=99 and startSailTurn
+          const sessionId = `sail_ep5_${userId}_active`;
+          // find a matching session by user
+          let foundId = null;
+          for (const [sid, s] of (global.SAIL_SESSIONS || new Map()).entries()) {
+            if (s.userId === userId && s.episode === 5) { foundId = sid; break; }
+          }
+          if (foundId) {
+            const s = global.SAIL_SESSIONS.get(foundId);
+            s.phase = 99;
+            await startSailTurn(foundId, interaction.channel);
+          }
+        } else {
+          // yes: +1 karma, proceed to fight phase
+          progress.karma = (progress.karma || 0) + 1;
+          await progress.save();
+          let foundId = null;
+          for (const [sid, s] of (global.SAIL_SESSIONS || new Map()).entries()) {
+            if (s.userId === userId && s.episode === 5) { foundId = sid; break; }
+          }
+          if (foundId) {
+            const s = global.SAIL_SESSIONS.get(foundId);
+            s.phase = 4; // spawn fight in startSailTurn
+            await startSailTurn(foundId, interaction.channel);
+          }
+        }
+        return;
+      }
+
+      // Handle sail_ep6_choice buttons (if needed in future) - placeholder
+      if (action === "sail_ep6_choice") {
+        const userId = ownerId;
+        if (interaction.user.id !== userId) return await interaction.reply({ content: 'Only the original requester can use these buttons.', flags: MessageFlags.Ephemeral });
+        try { await interaction.deferUpdate(); } catch (e) {}
+        return;
+      }
+
       // Handle sail_selectchar buttons
       if (action === "sail_selectchar") {
         const sessionId = parts[1];
         const cardIndex = parseInt(parts[2]);
         const session = global.SAIL_SESSIONS.get(sessionId);
         if (session && session.turnTimer) { try { clearTimeout(session.turnTimer); session.turnTimer = null; } catch (e) {} }
-        if (!session || session.userId !== interaction.user.id) return interaction.reply({ content: "Session not found or not your turn.", ephemeral: true });
+        if (!session || session.userId !== interaction.user.id) { try { await interaction.followUp({ content: "Session not found or not your turn.", ephemeral: true }); } catch (e) { try { await interaction.channel.send({ content: "Session not found or not your turn." }); } catch (err) {} } return; }
 
         const card = session.cards[cardIndex];
         if (!card || card.health <= 0 || (card.stamina || 3) <= 0) return interaction.reply({ content: "Invalid card.", ephemeral: true });
@@ -1196,26 +1800,73 @@ export async function execute(interaction, client) {
       // Handle sail_haki buttons (open haki menu for card)
       if (action === "sail_haki") {
         const sessionId = parts[1];
-        const cardIndex = parseInt(parts[2]);
+        const charPart = parts[2];
         const session = global.SAIL_SESSIONS.get(sessionId);
         if (session && session.turnTimer) { try { clearTimeout(session.turnTimer); session.turnTimer = null; } catch (e) {} }
-        if (!session || session.userId !== interaction.user.id) return interaction.reply({ content: "Session not found or not your turn.", ephemeral: true });
-        const card = session.cards[cardIndex];
-        if (!card) return interaction.reply({ content: 'Invalid card', ephemeral: true });
+        if (!session || session.userId !== interaction.user.id) { try { await interaction.followUp({ content: "Session not found or not your turn.", ephemeral: true }); } catch (e) { try { await interaction.channel.send({ content: "Session not found or not your turn." }); } catch (err) {} } return; }
 
-        const haki = card.haki || { armament: { stars:0 }, observation:{stars:0}, conqueror:{stars:0} };
-        const opts = [];
-        if (haki.observation && haki.observation.advanced) opts.push({ id: 'futuresight', label: 'Future Sight', cost: 1, style: ButtonStyle.Primary });
-        if (haki.armament && haki.armament.advanced) opts.push({ id: 'ryou', label: 'Ryou', cost: 2, style: ButtonStyle.Danger });
-        if (haki.conqueror && haki.conqueror.stars > 0) opts.push({ id: 'conqueror', label: 'Conqueror Strike', cost: 2, style: ButtonStyle.Success });
-        if (haki.conqueror && haki.conqueror.advanced) opts.push({ id: 'conq_aoe', label: 'Conqueror AoE', cost: 3, style: ButtonStyle.Danger });
+        // If 'all' button, open selector for which character's haki to use
+        if (charPart === 'all') {
+          // Defer the interaction to acknowledge it
+          try {
+            if (!interaction.deferred && !interaction.replied) {
+              await interaction.deferUpdate();
+            }
+            } catch (err) {
+              if (err && err.code === 10062) return; // Interaction expired
+              try {
+                try { await interaction.followUp({ content: "Error processing your action. Please try again.", ephemeral: true }); } catch (e) { try { await interaction.channel.send({ content: "Error processing your action. Please try again." }); } catch (err) {} }
+              } catch (e) {}
+              return;
+            }
 
-        if (opts.length === 0) return interaction.reply({ content: 'This character has no Haki abilities.', ephemeral: true });
+          const options = session.cards.map((c, idx) => ({ idx, name: c.card.name, has: !!(c.haki && (c.haki.armament.present || c.haki.observation.present || c.haki.conqueror.present)), alive: c.health > 0, playable: !(typeof c.stamina === 'number' && c.stamina <= 0) }));
+          const entries = options.filter(o => o.has && o.alive && o.playable);
+          if (entries.length === 0) {
+            try { await interaction.followUp({ content: 'No playable characters with Haki available.', ephemeral: true }); } catch (e) {}
+            return;
+          }
+          const { EmbedBuilder, ActionRowBuilder, ButtonBuilder } = await import('discord.js');
+          const embed = new EmbedBuilder().setTitle('Choose Haki Character').setDescription('Select which character to open Haki menu for.').setColor(0x3498db);
+          const btns = entries.map(e => new ButtonBuilder().setCustomId(`sail_haki_select:${sessionId}:${e.idx}`).setLabel(e.name).setStyle(ButtonStyle.Primary));
+          const selRow = new ActionRowBuilder().addComponents(btns.slice(0,5));
+          try { const follow = await interaction.followUp({ embeds: [embed], components: [selRow], ephemeral: true }); } catch (e) {}
 
-        const embed = new EmbedBuilder().setTitle(`${card.card.name} — Haki`).setDescription('Choose a Haki ability to use. These do not consume your turn but cost stamina.');
-        const buttons = opts.map(o => new ButtonBuilder().setCustomId(`sail_haki_use:${sessionId}:${cardIndex}:${o.id}`).setLabel(`${o.label} (Cost: ${o.cost})`).setStyle(o.style));
-        const row = new ActionRowBuilder().addComponents(buttons.slice(0,5));
-        await interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
+          // Collector for selection
+          const selFilter = (ii) => ii.user.id === session.userId && ii.customId && ii.customId.startsWith('sail_haki_select');
+          const selCollector = interaction.channel.createMessageComponentCollector({ filter: selFilter, time: 20000 });
+          selCollector.on('collect', async ii => {
+            try {
+              if (!ii.deferred && !ii.replied) {
+                await ii.deferUpdate();
+              }
+            } catch (err) {
+              if (err && err.code === 10062) return; // Interaction expired
+              try {
+                try { await ii.followUp({ content: "Error processing your action. Please try again.", ephemeral: true }); } catch (e) { try { await ii.channel.send({ content: "Error processing your action. Please try again." }); } catch (err) {} }
+              } catch (e) {}
+              return;
+            }
+            const selParts = ii.customId.split(':');
+            const selIdx = parseInt(selParts[2]);
+            try {
+              await handleSailHakiMenu(sessionId, selIdx, session, ii);
+            } catch (err) {
+              console.error('handleSailHakiMenu error', err);
+              try { await ii.followUp({ content: 'An error occurred opening Haki menu.', ephemeral: true }); } catch (e) {}
+            }
+            selCollector.stop();
+          });
+          return;
+        }
+        // otherwise older per-character id (fallback)
+        try {
+          await handleSailHakiMenu(sessionId, parseInt(charPart), session, interaction);
+        } catch (err) {
+          console.error('handleSailHakiMenu error', err);
+          try { await interaction.followUp({ content: 'An error occurred opening Haki menu.', ephemeral: true }); } catch (e) {}
+        }
+        return;
       }
 
       // Handle sail_chooseaction buttons
@@ -1245,7 +1896,14 @@ export async function execute(interaction, client) {
               .setStyle(ButtonStyle.Primary)
           );
           const row = new ActionRowBuilder().addComponents(targetButtons);
-          await interaction.update({ embeds: [embed], components: [row] });
+          try {
+            await interaction.update({ embeds: [embed], components: [row] });
+          } catch (e) {
+            if (e && e.code === 10062) return; // Interaction expired
+            try {
+              await interaction.reply({ content: "Error updating targets. Please try again.", ephemeral: true });
+            } catch (err) {}
+          }
         }
       }
 
@@ -1284,7 +1942,14 @@ export async function execute(interaction, client) {
             .setStyle(ButtonStyle.Primary)
         );
         const row = new ActionRowBuilder().addComponents(itemButtons);
-        await interaction.update({ embeds: [embed], components: [row] });
+        try {
+          await interaction.update({ embeds: [embed], components: [row] });
+        } catch (e) {
+          if (e && e.code === 10062) return; // Interaction expired
+          try {
+            await interaction.reply({ content: "Error updating items. Please try again.", ephemeral: true });
+          } catch (err) {}
+        }
       }
 
       // Handle sail_heal_item buttons
@@ -1305,7 +1970,14 @@ export async function execute(interaction, client) {
             .setDisabled(c.health <= 0)
         );
         const row = new ActionRowBuilder().addComponents(healButtons);
-        await interaction.update({ embeds: [embed], components: [row] });
+        try {
+          await interaction.update({ embeds: [embed], components: [row] });
+        } catch (e) {
+          if (e && e.code === 10062) return; // Interaction expired
+          try {
+            await interaction.reply({ content: "Error updating cards. Please try again.", ephemeral: true });
+          } catch (err) {}
+        }
       }
 
       // Handle sail_haki_use actions
@@ -1315,28 +1987,30 @@ export async function execute(interaction, client) {
         const ability = parts[3];
         const session = global.SAIL_SESSIONS.get(sessionId);
         if (session && session.turnTimer) { try { clearTimeout(session.turnTimer); session.turnTimer = null; } catch (e) {} }
-        if (!session || session.userId !== interaction.user.id) return interaction.reply({ content: 'Session not found or not your turn.', ephemeral: true });
+        if (!session || session.userId !== interaction.user.id) { try { await interaction.followUp({ content: 'Session not found or not your turn.', ephemeral: true }); } catch (e) { try { await interaction.channel.send({ content: 'Session not found or not your turn.' }); } catch (err) {} } return; }
         const card = session.cards[cardIndex];
-        if (!card) return interaction.reply({ content: 'Invalid card', ephemeral: true });
+        if (!card) { try { await interaction.followUp({ content: 'Invalid card', ephemeral: true }); } catch (e) { try { await interaction.channel.send({ content: 'Invalid card' }); } catch (err) {} } return; }
 
         // perform abilities (similar to duel)
         if (ability === 'ryou') {
-          if ((card.stamina || 0) < 2) return interaction.reply({ content: 'Not enough stamina for Ryou.', ephemeral: true });
+          if ((card.stamina || 0) < 2) { try { await interaction.followUp({ content: 'Not enough stamina for Ryou.', ephemeral: true }); } catch (e) { try { await interaction.channel.send({ content: 'Not enough stamina for Ryou.' }); } catch (err) {} } return; }
           card.stamina = Math.max(0, card.stamina - 2);
           session.ryou = session.ryou || {};
           session.ryou[session.userId] = { cardIdx: cardIndex, remaining: 1 };
-          await interaction.reply({ content: `${interaction.user} used Ryou! Next incoming attack will redirect to ${card.card.name} and deal no damage.`, ephemeral: false });
+          try { await interaction.followUp({ content: `${interaction.user} used Ryou! Next incoming attack will redirect to ${card.card.name} and deal no damage.`, ephemeral: false }); } catch (e) { try { await interaction.channel.send({ content: `${interaction.user} used Ryou! Next incoming attack will redirect to ${card.card.name} and deal no damage.` }); } catch (err) {} }
+          try { await startSailTurn(sessionId, interaction.channel); } catch (e) {}
           return;
         }
         if (ability === 'futuresight') {
-          if ((card.stamina || 0) < 1) return interaction.reply({ content: 'Not enough stamina for Future Sight.', ephemeral: true });
+          if ((card.stamina || 0) < 1) { try { await interaction.followUp({ content: 'Not enough stamina for Future Sight.', ephemeral: true }); } catch (e) { try { await interaction.channel.send({ content: 'Not enough stamina for Future Sight.' }); } catch (err) {} } return; }
           card.stamina = Math.max(0, card.stamina - 1);
           card.nextAttackGuaranteedDodge = true;
-          await interaction.reply({ content: `${interaction.user} used Future Sight on ${card.card.name}! It will dodge the next incoming attack.`, ephemeral: false });
+          try { await interaction.followUp({ content: `${interaction.user} used Future Sight on ${card.card.name}! It will dodge the next incoming attack.`, ephemeral: false }); } catch (e) { try { await interaction.channel.send({ content: `${interaction.user} used Future Sight on ${card.card.name}! It will dodge the next incoming attack.` }); } catch (err) {} }
+          try { await startSailTurn(sessionId, interaction.channel); } catch (e) {}
           return;
         }
         if (ability === 'conqueror') {
-          if ((card.stamina || 0) < 2) return interaction.reply({ content: 'Not enough stamina for Conqueror.', ephemeral: true });
+          if ((card.stamina || 0) < 2) { try { await interaction.followUp({ content: 'Not enough stamina for Conqueror.', ephemeral: true }); } catch (e) { try { await interaction.channel.send({ content: 'Not enough stamina for Conqueror.' }); } catch (err) {} } return; }
           card.stamina = Math.max(0, card.stamina - 2);
           const stars = (card.haki && card.haki.conqueror && card.haki.conqueror.stars) || 0;
           const threshold = 100 + (stars * 10);
@@ -1344,21 +2018,23 @@ export async function execute(interaction, client) {
           for (const e of session.enemies) {
             if (e.health > 0 && e.health <= threshold) { e.health = 0; knocked.push(e.name); }
           }
-          await interaction.reply({ content: `Conqueror used! Knocked out: ${knocked.length ? knocked.join(', ') : 'None'}`, ephemeral: false });
+          try { await interaction.followUp({ content: `Conqueror used! Knocked out: ${knocked.length ? knocked.join(', ') : 'None'}`, ephemeral: false }); } catch (e) { try { await interaction.channel.send({ content: `Conqueror used! Knocked out: ${knocked.length ? knocked.join(', ') : 'None'}` }); } catch (err) {} }
+          try { await startSailTurn(sessionId, interaction.channel); } catch (e) {}
           return;
         }
         if (ability === 'conq_aoe') {
-          if ((card.stamina || 0) < 3) return interaction.reply({ content: 'Not enough stamina for Conqueror AoE.', ephemeral: true });
-          card.stamina = Math.max(0, card.stamina - 3);
+          if ((card.stamina || 0) < 2) { try { await interaction.followUp({ content: 'Not enough stamina for Conqueror AoE.', ephemeral: true }); } catch (e) { try { await interaction.channel.send({ content: 'Not enough stamina for Conqueror AoE.' }); } catch (err) {} } return; }
+          card.stamina = Math.max(0, card.stamina - 2);
           const stars = (card.haki && card.haki.conqueror && card.haki.conqueror.stars) || 0;
           const dmgPct = stars * 0.10;
-          const dmg = Math.max(1, Math.round(card.maxHealth * dmgPct));
+          const dmg = Math.round(card.maxHealth * dmgPct);
           for (const e of session.enemies) {
             if (e.health > 0) {
               e.health = Math.max(0, e.health - dmg);
             }
           }
-          await interaction.reply({ content: `${interaction.user} used Advanced Conqueror AoE for ${dmg} damage to all enemies!`, ephemeral: false });
+          try { await interaction.followUp({ content: `${interaction.user} used Advanced Conqueror AoE for ${dmg} damage to all enemies!`, ephemeral: false }); } catch (e) { try { await interaction.channel.send({ content: `${interaction.user} used Advanced Conqueror AoE for ${dmg} damage to all enemies!` }); } catch (err) {} }
+          try { await startSailTurn(sessionId, interaction.channel); } catch (e) {}
           return;
         }
       }
@@ -1396,7 +2072,14 @@ export async function execute(interaction, client) {
         const healEmbed = new EmbedBuilder()
           .setTitle('Heal Result')
           .setDescription(`Healed ${card.card.name} for ${actualHeal} HP! Current HP: ${card.health}/${card.maxHealth}`);
-        await interaction.update({ embeds: [healEmbed], components: [] });
+        try {
+          await interaction.update({ embeds: [healEmbed], components: [] });
+        } catch (e) {
+          if (e && e.code === 10062) return; // Interaction expired
+          try {
+            await interaction.reply({ content: "Error applying heal. Please try again.", ephemeral: true });
+          } catch (err) {}
+        }
         setTimeout(async () => {
           await enemyAttack(session, interaction.channel);
           await startSailTurn(sessionId, interaction.channel);
@@ -1739,8 +2422,20 @@ export async function execute(interaction, client) {
           }
         }
 
-        // Build user card embed
-        const userEmbed = buildUserCardEmbed(card, ownedEntry, interaction.user, equippedWeapon);
+        // Apply team boosts if card is in user's team
+        if (progDoc && progDoc.team && Array.isArray(progDoc.team) && progDoc.team.includes(cardId)) {
+          const { computeTeamBoostsDetailed } = await import("../lib/boosts.js");
+          const teamBoostsInfo = computeTeamBoostsDetailed(progDoc.team, cardsMap, winv);
+          const totalBoosts = teamBoostsInfo.totals;
+          // Apply team boosts to ownedEntry for display
+          if (totalBoosts.atk || totalBoosts.hp || totalBoosts.special) {
+            ownedEntry = { ...ownedEntry, boost: totalBoosts };
+          }
+        }
+
+        // Build user card embed with teamBanner for banner boost calculation
+        const teamBanner = winv ? winv.teamBanner : null;
+        const userEmbed = buildUserCardEmbed(card, ownedEntry, interaction.user, equippedWeapon, teamBanner);
         if (!userEmbed) {
           await interaction.reply({ content: "Unable to build user card stats.", ephemeral: true });
           return;
@@ -2188,15 +2883,16 @@ async function startEpisode2SecretStage(userId, interaction) {
       health = Math.round(health * 1.05);
     }
 
-    const finalPower = roundNearestFive(Math.round(power));
-    const baseAttackMin = Math.round(attackMin);
-    const baseAttackMax = Math.round(attackMax);
-    const finalAttackMin = (hasBanner && bannerSignature.includes(cardId)) ? baseAttackMin : roundNearestFive(baseAttackMin);
-    const finalAttackMax = (hasBanner && bannerSignature.includes(cardId)) ? baseAttackMax : roundNearestFive(baseAttackMax);
-    const finalHealth = roundNearestFive(Math.round(health));
+    let scaled = { attackRange: [Math.round(attackMin), Math.round(attackMax)], power: Math.round(power) };
+    const hakiApplied = applyHakiStatBoosts(scaled, card, progressCard);
+    scaled = hakiApplied.scaled;
+    const finalPower = roundNearestFive(Math.round(scaled.power));
+    const finalAttackMin = roundNearestFive(Math.round(scaled.attackRange[0] || 0));
+    const finalAttackMax = roundNearestFive(Math.round(scaled.attackRange[1] || 0));
+    const finalHealth = roundNearestFive(Math.round(health * (hakiApplied.haki.armament.multiplier || 1)));
     if (special && special.range) special.range = roundRangeToFive([Math.round(special.range[0] || 0), Math.round(special.range[1] || 0)]);
-
-    return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, stamina: 3, usedSpecial: false, attackedLastTurn: false };
+    const hakiFinal = hakiApplied.haki || parseHaki(card);
+    return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, stamina: 3, usedSpecial: false, attackedLastTurn: false, haki: hakiFinal, dodgeChance: (hakiFinal.observation.stars || 0) * 0.05 };
   });
 
   global.SAIL_SESSIONS.set(sessionId, {
@@ -2336,15 +3032,17 @@ const startEpisode2Stage2 = async (userId, interaction, hasZoro) => {
       health = Math.round(health * 1.05);
     }
 
-    const finalPower = roundNearestFive(Math.round(power));
-    const baseAttackMin = Math.round(attackMin);
-    const baseAttackMax = Math.round(attackMax);
-    const finalAttackMin = (hasBanner && bannerSignature.includes(cardId)) ? baseAttackMin : roundNearestFive(baseAttackMin);
-    const finalAttackMax = (hasBanner && bannerSignature.includes(cardId)) ? baseAttackMax : roundNearestFive(baseAttackMax);
-    const finalHealth = roundNearestFive(Math.round(health));
+    let scaled = { attackRange: [Math.round(attackMin), Math.round(attackMax)], power: Math.round(power) };
+    const hakiApplied = applyHakiStatBoosts(scaled, card, progress);
+    scaled = hakiApplied.scaled;
+    const finalPower = roundNearestFive(Math.round(scaled.power));
+    const finalAttackMin = roundNearestFive(Math.round(scaled.attackRange[0] || 0));
+    const finalAttackMax = roundNearestFive(Math.round(scaled.attackRange[1] || 0));
+    const finalHealth = roundNearestFive(Math.round(health * (hakiApplied.haki.armament.multiplier || 1)));
     if (special && special.range) special.range = roundRangeToFive([Math.round(special.range[0] || 0), Math.round(special.range[1] || 0)]);
 
-    return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, stamina: 3, usedSpecial: false, attackedLastTurn: false };
+    const hakiFinal = hakiApplied.haki || parseHaki(card);
+    return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, stamina: 3, usedSpecial: false, attackedLastTurn: false, haki: hakiFinal, dodgeChance: (hakiFinal.observation.stars || 0) * 0.05 };
   });
 
   global.SAIL_SESSIONS.set(sessionId, {
@@ -2365,6 +3063,8 @@ const startEpisode2Stage2 = async (userId, interaction, hasZoro) => {
   // initialize debounce marker so startSailTurn won't immediately send another embed
   await startSailTurn(sessionId, interaction.channel);
 };
+
+
 
 // Start Episode 3: Morgan vs Luffy
 const startEpisode3Stage2 = async (userId, interaction) => {
@@ -2483,6 +3183,397 @@ const startEpisode3Stage2 = async (userId, interaction) => {
       health = Math.round(health * 1.05);
     }
 
+    let scaled = { attackRange: [Math.round(attackMin), Math.round(attackMax)], power: Math.round(power) };
+    const hakiApplied = applyHakiStatBoosts(scaled, card, progress);
+    scaled = hakiApplied.scaled;
+    const finalPower = roundNearestFive(Math.round(scaled.power));
+    const finalAttackMin = roundNearestFive(Math.round(scaled.attackRange[0] || 0));
+    const finalAttackMax = roundNearestFive(Math.round(scaled.attackRange[1] || 0));
+    const finalHealth = roundNearestFive(Math.round(health * (hakiApplied.haki.armament.multiplier || 1)));
+    if (special && special.range) special.range = roundRangeToFive([Math.round(special.range[0] || 0), Math.round(special.range[1] || 0)]);
+
+    const hakiFinal = hakiApplied.haki || parseHaki(card);
+    return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, stamina: 3, usedSpecial: false, attackedLastTurn: false, haki: hakiFinal, dodgeChance: (hakiFinal.observation.stars || 0) * 0.05 };
+  });
+
+  global.SAIL_SESSIONS.set(sessionId, {
+    userId,
+    user: interaction.user,
+    cards: p1Cards,
+    lifeIndex: 0,
+    enemies,
+    phase: 2,
+    sessionId,
+    channelId: interaction.channel.id,
+    msgId: null,
+    difficulty,
+    episode: 3,
+    hasMorgan: true
+  });
+
+  await startSailTurn(sessionId, interaction.channel);
+};
+
+export const startEpisode4Stage2 = async (userId, interaction) => {
+  const Progress = (await import("../models/Progress.js")).default;
+  const progress = await Progress.findOne({ userId });
+  if (!progress || !progress.team || progress.team.length === 0) {
+    try {
+      await interaction.followUp({ content: "You need a team to sail. Use /team to set your team.", ephemeral: true });
+    } catch (e) {
+      await interaction.channel.send({ content: "You need a team to sail. Use /team to set your team." });
+    }
+    return;
+  }
+
+  // Stage 1 is a narrative embed; do not spawn enemies yet. Stage 2 will spawn Buggy Pirates when the player advances.
+  const enemies = [];
+
+  const SailProgress = (await import("../models/SailProgress.js")).default;
+  const sailProgress = await SailProgress.findOne({ userId });
+  const difficulty = (sailProgress && sailProgress.difficulty) || 'easy';
+  const multiplier = difficulty === 'hard' ? 1.5 : difficulty === 'medium' ? 1.25 : 1;
+  enemies.forEach(enemy => {
+    enemy.health = roundNearestFive(enemy.health * multiplier);
+    enemy.maxHealth = enemy.health;
+    enemy.attackRange = [Math.ceil(enemy.attackRange[0] * multiplier), Math.ceil(enemy.attackRange[1] * multiplier)];
+    enemy.power = Math.ceil(enemy.power * multiplier);
+  });
+
+  const sessionId = `sail_ep4_${userId}_${Date.now()}`;
+  global.SAIL_SESSIONS = global.SAIL_SESSIONS || new Map();
+
+  const WeaponInventory = (await import('../models/WeaponInventory.js')).default;
+  const winv = await WeaponInventory.findOne({ userId });
+  const hasBanner = winv && winv.teamBanner === 'alvida_pirates_banner_c_01';
+  const { computeTeamBoosts } = await import("../lib/boosts.js");
+  const { getCardById } = await import("../cards.js");
+
+  function getEquippedWeaponForCard(winv, cardId) {
+    if (!winv || !winv.weapons) return null;
+    if (winv.weapons instanceof Map) {
+      for (const [wid, w] of winv.weapons.entries()) {
+        if (w && w.equippedTo === cardId) {
+          const wcard = getCardById(wid);
+          if (wcard) return { id: wid, card: wcard, ...w };
+        }
+      }
+    } else {
+      for (const [wid, w] of Object.entries(winv.weapons || {})) {
+        if (w && w.equippedTo === cardId) {
+          const wcard = getCardById(wid);
+          if (wcard) return { id: wid, card: wcard, ...w };
+        }
+      }
+    }
+    return null;
+  }
+
+  const p1TeamBoosts = computeTeamBoosts(progress.team || [], progress.cards || null, null);
+  const p1Cards = progress.team.map(cardId => {
+    const card = getCardById(cardId);
+    const hasMap = progress.cards && typeof progress.cards.get === 'function';
+    const progressCard = hasMap ? (progress.cards.get(cardId) || { level: 0, xp: 0 }) : (progress.cards[cardId] || { level: 0, xp: 0 });
+    const level = progressCard.level || 0;
+    const mult = 1 + (level * 0.01);
+    let health = Math.round((card.health || 0) * mult);
+    let attackMin = Math.round(((card.attackRange && card.attackRange[0]) || 0) * mult);
+    let attackMax = Math.round(((card.attackRange && card.attackRange[1]) || 0) * mult);
+    const special = card.specialAttack ? { ...card.specialAttack, range: [(card.specialAttack.range[0] || 0) * mult, (card.specialAttack.range[1] || 0) * mult] } : null;
+    let power = Math.round((card.power || 0) * mult);
+
+    const equipped = getEquippedWeaponForCard(winv, cardId);
+    if (equipped && equipped.card && card.signatureWeapon === equipped.id) {
+      const weaponCard = equipped.card;
+      const weaponLevel = equipped.level || 1;
+      const weaponLevelBoost = (weaponLevel - 1) * 0.01;
+      let sigBoost = 0;
+      if (weaponCard.signatureCards && Array.isArray(weaponCard.signatureCards)) {
+        const idx = weaponCard.signatureCards.indexOf(cardId);
+        if (idx > 0) sigBoost = 0.25;
+      }
+      const totalWeaponBoost = 1 + weaponLevelBoost + sigBoost;
+      if (weaponCard.boost) {
+        const atkBoost = Math.round((weaponCard.boost.atk || 0) * totalWeaponBoost);
+        const hpBoost = Math.round((weaponCard.boost.hp || 0) * totalWeaponBoost);
+        power += atkBoost;
+        attackMin += atkBoost;
+        attackMax += atkBoost;
+        health += hpBoost;
+      }
+    }
+
+    if (p1TeamBoosts.atk) {
+      const atkMul = 1 + (p1TeamBoosts.atk / 100);
+      attackMin = Math.round(attackMin * atkMul);
+      attackMax = Math.round(attackMax * atkMul);
+      power = Math.round(power * atkMul);
+    }
+    if (p1TeamBoosts.hp) {
+      const hpMul = 1 + (p1TeamBoosts.hp / 100);
+      health = Math.round(health * hpMul);
+    }
+    if (special && p1TeamBoosts.special) {
+      const spMul = 1 + (p1TeamBoosts.special / 100);
+      special.range = [Math.round(special.range[0] * spMul), Math.round(special.range[1] * spMul)];
+    }
+
+    const bannerSignature = ['Alvida_c_01', 'heppoko_c_01', 'Peppoko_c_01', 'Poppoko_c_01', 'koby_c_01'];
+    if (hasBanner && bannerSignature.includes(cardId)) {
+      attackMin = Math.round(attackMin * 1.05);
+      attackMax = Math.round(attackMax * 1.05);
+      power = Math.round(power * 1.05);
+      health = Math.round(health * 1.05);
+    }
+
+    let scaled = { attackRange: [Math.round(attackMin), Math.round(attackMax)], power: Math.round(power) };
+    const hakiApplied = applyHakiStatBoosts(scaled, card, progressCard);
+    scaled = hakiApplied.scaled;
+    const finalPower = roundNearestFive(Math.round(scaled.power));
+    const finalAttackMin = roundNearestFive(Math.round(scaled.attackRange[0] || 0));
+    const finalAttackMax = roundNearestFive(Math.round(scaled.attackRange[1] || 0));
+    const finalHealth = roundNearestFive(Math.round(health * (hakiApplied.haki.armament.multiplier || 1)));
+    if (special && special.range) special.range = roundRangeToFive([Math.round(special.range[0] || 0), Math.round(special.range[1] || 0)]);
+
+    const hakiFinal = hakiApplied.haki || parseHaki(card);
+    return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, stamina: 3, usedSpecial: false, attackedLastTurn: false, haki: hakiFinal, dodgeChance: (hakiFinal.observation.stars || 0) * 0.05 };
+  });
+
+  global.SAIL_SESSIONS.set(sessionId, {
+    userId,
+    user: interaction.user,
+    cards: p1Cards,
+    lifeIndex: 0,
+    enemies,
+    phase: 1,
+    sessionId,
+    channelId: interaction.channel.id,
+    msgId: null,
+    difficulty,
+    episode: 4
+  });
+
+  await startSailTurn(sessionId, interaction.channel);
+};
+
+export const startEpisode5Stage2 = async (userId, interaction) => {
+  const Progress = (await import("../models/Progress.js")).default;
+  const progress = await Progress.findOne({ userId });
+  if (!progress || !progress.team || progress.team.length === 0) {
+    try { await interaction.followUp({ content: "You need a team to sail. Use /team to set your team.", ephemeral: true }); } catch (e) { await interaction.channel.send({ content: "You need a team to sail. Use /team to set your team." }); }
+    return;
+  }
+
+  const enemies = [];
+  const SailProgress = (await import("../models/SailProgress.js")).default;
+  const sailProgress = await SailProgress.findOne({ userId });
+  const difficulty = (sailProgress && sailProgress.difficulty) || 'easy';
+  const multiplier = difficulty === 'hard' ? 1.5 : difficulty === 'medium' ? 1.25 : 1;
+
+  const sessionId = `sail_ep5_${userId}_${Date.now()}`;
+  global.SAIL_SESSIONS = global.SAIL_SESSIONS || new Map();
+
+  const WeaponInventory = (await import('../models/WeaponInventory.js')).default;
+  const winv = await WeaponInventory.findOne({ userId });
+  const hasBanner = winv && winv.teamBanner === 'alvida_pirates_banner_c_01';
+  const { computeTeamBoosts } = await import("../lib/boosts.js");
+  const { getCardById } = await import("../cards.js");
+
+  function getEquippedWeaponForCard(winv, cardId) {
+    if (!winv || !winv.weapons) return null;
+    if (winv.weapons instanceof Map) {
+      for (const [wid, w] of winv.weapons.entries()) {
+        if (w && w.equippedTo === cardId) {
+          const wcard = getCardById(wid);
+          if (wcard) return { id: wid, card: wcard, ...w };
+        }
+      }
+    } else {
+      for (const [wid, w] of Object.entries(winv.weapons || {})) {
+        if (w && w.equippedTo === cardId) {
+          const wcard = getCardById(wid);
+          if (wcard) return { id: wid, card: wcard, ...w };
+        }
+      }
+    }
+    return null;
+  }
+
+  const p1TeamBoosts = computeTeamBoosts(progress.team || [], progress.cards || null, null);
+  const p1Cards = progress.team.map(cardId => {
+    const card = getCardById(cardId);
+    const hasMap = progress.cards && typeof progress.cards.get === 'function';
+    const progressCard = hasMap ? (progress.cards.get(cardId) || { level: 0, xp: 0 }) : (progress.cards[cardId] || { level: 0, xp: 0 });
+    const level = progressCard.level || 0;
+    const mult = 1 + (level * 0.01);
+    let health = Math.round((card.health || 0) * mult);
+    let attackMin = Math.round(((card.attackRange && card.attackRange[0]) || 0) * mult);
+    let attackMax = Math.round(((card.attackRange && card.attackRange[1]) || 0) * mult);
+    const special = card.specialAttack ? { ...card.specialAttack, range: [(card.specialAttack.range[0] || 0) * mult, (card.specialAttack.range[1] || 0) * mult] } : null;
+    let power = Math.round((card.power || 0) * mult);
+
+    const equipped = getEquippedWeaponForCard(winv, cardId);
+    if (equipped && equipped.card && card.signatureWeapon === equipped.id) {
+      const weaponCard = equipped.card;
+      const weaponLevel = equipped.level || 1;
+      const weaponLevelBoost = (weaponLevel - 1) * 0.01;
+      let sigBoost = 0;
+      if (weaponCard.signatureCards && Array.isArray(weaponCard.signatureCards)) {
+        const idx = weaponCard.signatureCards.indexOf(cardId);
+        if (idx > 0) sigBoost = 0.25;
+      }
+      const totalWeaponBoost = 1 + weaponLevelBoost + sigBoost;
+      if (weaponCard.boost) {
+        const atkBoost = Math.round((weaponCard.boost.atk || 0) * totalWeaponBoost);
+        const hpBoost = Math.round((weaponCard.boost.hp || 0) * totalWeaponBoost);
+        power += atkBoost; attackMin += atkBoost; attackMax += atkBoost; health += hpBoost;
+      }
+    }
+
+    if (p1TeamBoosts.atk) {
+      const atkMul = 1 + (p1TeamBoosts.atk / 100);
+      attackMin = Math.round(attackMin * atkMul);
+      attackMax = Math.round(attackMax * atkMul);
+      power = Math.round(power * atkMul);
+    }
+    if (p1TeamBoosts.hp) {
+      const hpMul = 1 + (p1TeamBoosts.hp / 100);
+      health = Math.round(health * hpMul);
+    }
+    if (special && p1TeamBoosts.special) {
+      const spMul = 1 + (p1TeamBoosts.special / 100);
+      special.range = [Math.round(special.range[0] * spMul), Math.round(special.range[1] * spMul)];
+    }
+
+    const bannerSignature = ['Alvida_c_01', 'heppoko_c_01', 'Peppoko_c_01', 'Poppoko_c_01', 'koby_c_01'];
+    if (hasBanner && bannerSignature.includes(cardId)) {
+      attackMin = Math.round(attackMin * 1.05); attackMax = Math.round(attackMax * 1.05); power = Math.round(power * 1.05); health = Math.round(health * 1.05);
+    }
+
+    let scaled = { attackRange: [Math.round(attackMin), Math.round(attackMax)], power: Math.round(power) };
+    const hakiApplied = applyHakiStatBoosts(scaled, card, progressCard);
+    scaled = hakiApplied.scaled;
+    const finalPower = roundNearestFive(Math.round(scaled.power));
+    const finalAttackMin = roundNearestFive(Math.round(scaled.attackRange[0] || 0));
+    const finalAttackMax = roundNearestFive(Math.round(scaled.attackRange[1] || 0));
+    const finalHealth = roundNearestFive(Math.round(health * (hakiApplied.haki.armament.multiplier || 1)));
+    if (special && special.range) special.range = roundRangeToFive([Math.round(special.range[0] || 0), Math.round(special.range[1] || 0)]);
+
+    const hakiFinal = hakiApplied.haki || parseHaki(card);
+    return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, stamina: 3, usedSpecial: false, attackedLastTurn: false, haki: hakiFinal, dodgeChance: (hakiFinal.observation.stars || 0) * 0.05 };
+  });
+
+  global.SAIL_SESSIONS.set(sessionId, {
+    userId,
+    user: interaction.user,
+    cards: p1Cards,
+    lifeIndex: 0,
+    enemies,
+    phase: 1,
+    sessionId,
+    channelId: interaction.channel.id,
+    msgId: null,
+    difficulty,
+    episode: 5
+  });
+
+  await startSailTurn(sessionId, interaction.channel);
+};
+
+export const startEpisode6Stage2 = async (userId, interaction) => {
+  const Progress = (await import("../models/Progress.js")).default;
+  const progress = await Progress.findOne({ userId });
+  if (!progress || !progress.team || progress.team.length === 0) {
+    try { await interaction.followUp({ content: "You need a team to sail. Use /team to set your team.", ephemeral: true }); } catch (e) { await interaction.channel.send({ content: "You need a team to sail. Use /team to set your team." }); }
+    return;
+  }
+
+  const enemies = [];
+  const SailProgress = (await import("../models/SailProgress.js")).default;
+  const sailProgress = await SailProgress.findOne({ userId });
+  const difficulty = (sailProgress && sailProgress.difficulty) || 'easy';
+  const multiplier = difficulty === 'hard' ? 1.5 : difficulty === 'medium' ? 1.25 : 1;
+
+  const sessionId = `sail_ep6_${userId}_${Date.now()}`;
+  global.SAIL_SESSIONS = global.SAIL_SESSIONS || new Map();
+
+  const WeaponInventory = (await import('../models/WeaponInventory.js')).default;
+  const winv = await WeaponInventory.findOne({ userId });
+  const hasBanner = winv && winv.teamBanner === 'alvida_pirates_banner_c_01';
+  const { computeTeamBoosts } = await import("../lib/boosts.js");
+  const { getCardById } = await import("../cards.js");
+
+  function getEquippedWeaponForCard(winv, cardId) {
+    if (!winv || !winv.weapons) return null;
+    if (winv.weapons instanceof Map) {
+      for (const [wid, w] of winv.weapons.entries()) {
+        if (w && w.equippedTo === cardId) {
+          const wcard = getCardById(wid);
+          if (wcard) return { id: wid, card: wcard, ...w };
+        }
+      }
+    } else {
+      for (const [wid, w] of Object.entries(winv.weapons || {})) {
+        if (w && w.equippedTo === cardId) {
+          const wcard = getCardById(wid);
+          if (wcard) return { id: wid, card: wcard, ...w };
+        }
+      }
+    }
+    return null;
+  }
+
+  const p1TeamBoosts = computeTeamBoosts(progress.team || [], progress.cards || null, null);
+  const p1Cards = progress.team.map(cardId => {
+    const card = getCardById(cardId);
+    const hasMap = progress.cards && typeof progress.cards.get === 'function';
+    const progressCard = hasMap ? (progress.cards.get(cardId) || { level: 0, xp: 0 }) : (progress.cards[cardId] || { level: 0, xp: 0 });
+    const level = progressCard.level || 0;
+    const mult = 1 + (level * 0.01);
+    let health = Math.round((card.health || 0) * mult);
+    let attackMin = Math.round(((card.attackRange && card.attackRange[0]) || 0) * mult);
+    let attackMax = Math.round(((card.attackRange && card.attackRange[1]) || 0) * mult);
+    const special = card.specialAttack ? { ...card.specialAttack, range: [(card.specialAttack.range[0] || 0) * mult, (card.specialAttack.range[1] || 0) * mult] } : null;
+    let power = Math.round((card.power || 0) * mult);
+
+    const equipped = getEquippedWeaponForCard(winv, cardId);
+    if (equipped && equipped.card && card.signatureWeapon === equipped.id) {
+      const weaponCard = equipped.card;
+      const weaponLevel = equipped.level || 1;
+      const weaponLevelBoost = (weaponLevel - 1) * 0.01;
+      let sigBoost = 0;
+      if (weaponCard.signatureCards && Array.isArray(weaponCard.signatureCards)) {
+        const idx = weaponCard.signatureCards.indexOf(cardId);
+        if (idx > 0) sigBoost = 0.25;
+      }
+      const totalWeaponBoost = 1 + weaponLevelBoost + sigBoost;
+      if (weaponCard.boost) {
+        const atkBoost = Math.round((weaponCard.boost.atk || 0) * totalWeaponBoost);
+        const hpBoost = Math.round((weaponCard.boost.hp || 0) * totalWeaponBoost);
+        power += atkBoost; attackMin += atkBoost; attackMax += atkBoost; health += hpBoost;
+      }
+    }
+
+    if (p1TeamBoosts.atk) {
+      const atkMul = 1 + (p1TeamBoosts.atk / 100);
+      attackMin = Math.round(attackMin * atkMul);
+      attackMax = Math.round(attackMax * atkMul);
+      power = Math.round(power * atkMul);
+    }
+    if (p1TeamBoosts.hp) {
+      const hpMul = 1 + (p1TeamBoosts.hp / 100);
+      health = Math.round(health * hpMul);
+    }
+    if (special && p1TeamBoosts.special) {
+      const spMul = 1 + (p1TeamBoosts.special / 100);
+      special.range = [Math.round(special.range[0] * spMul), Math.round(special.range[1] * spMul)];
+    }
+
+    const bannerSignature = ['Alvida_c_01', 'heppoko_c_01', 'Peppoko_c_01', 'Poppoko_c_01', 'koby_c_01'];
+    if (hasBanner && bannerSignature.includes(cardId)) {
+      attackMin = Math.round(attackMin * 1.05); attackMax = Math.round(attackMax * 1.05); power = Math.round(power * 1.05); health = Math.round(health * 1.05);
+    }
+
     const finalPower = roundNearestFive(Math.round(power));
     const baseAttackMin = Math.round(attackMin);
     const baseAttackMax = Math.round(attackMax);
@@ -2500,13 +3591,12 @@ const startEpisode3Stage2 = async (userId, interaction) => {
     cards: p1Cards,
     lifeIndex: 0,
     enemies,
-    phase: 2,
+    phase: 1,
     sessionId,
     channelId: interaction.channel.id,
     msgId: null,
     difficulty,
-    episode: 3,
-    hasMorgan: true
+    episode: 6
   });
 
   await startSailTurn(sessionId, interaction.channel);

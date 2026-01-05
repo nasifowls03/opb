@@ -18,7 +18,8 @@ export const data = new SlashCommandBuilder()
     .addSubcommand(s => s.setName("give-item").setDescription("Give an item to a user").addUserOption(o => o.setName("user").setDescription("Target user to receive the item").setRequired(true)).addStringOption(o => o.setName("item").setRequired(true).setDescription("resettoken | chestB | chestA | chestS etc.")).addIntegerOption(o => o.setName("amount").setDescription("Amount of the item to give").setRequired(true)))
     .addSubcommand(s => s.setName("give-card").setDescription("Give a card to a user").addUserOption(o => o.setName("user").setDescription("Target user to receive the card").setRequired(true)).addStringOption(o => o.setName("card").setDescription("Card name or id to give").setRequired(true)))
     .addSubcommand(s => s.setName("reset").setDescription("Reset a user's data").addUserOption(o => o.setName("user").setDescription("Target user to reset").setRequired(true)))
-    .addSubcommand(s => s.setName("reset-sail").setDescription("Reset a user's sail progress").addUserOption(o => o.setName("user").setDescription("Target user").setRequired(true))));
+    .addSubcommand(s => s.setName("reset-sail").setDescription("Reset a user's sail progress").addUserOption(o => o.setName("user").setDescription("Target user").setRequired(true)))
+    .addSubcommand(s => s.setName("set-sail").setDescription("Set a user's sail episode").addStringOption(o => o.setName("episode").setDescription("Episode number or name").setRequired(true)).addUserOption(o => o.setName("user").setDescription("Target user").setRequired(true))));
 
 export const aliases = ["ownercmds"];
 
@@ -90,6 +91,7 @@ export async function execute(interactionOrMessage, client) {
           "• `op owner give-money <amount> <@user>` — give money to user\n" +
           "• `op owner reset <@user>` — reset a user's data\n" +
           "• `op owner reset-sail <@user>` — reset a user's sail progress\n" +
+          "• `op owner set-sail <episode> <@user>` — set a user's sail episode\n" +
           "• `op owner setdrops <#channel|off>` — set a channel where random cards are dropped every 5 minutes (first drop sent immediately)\n" +
           "• `op owner unsetdrops` — disable drops for this server\n" +
           "• `op owner setreset <#channel|off>` — set a channel where the bot will post a message every global pull reset\n" +
@@ -267,6 +269,39 @@ export async function execute(interactionOrMessage, client) {
     } catch (err) {
       console.error('Error resetting sail progress:', err);
       const reply = "Error resetting sail progress.";
+      if (isInteraction) return interactionOrMessage.reply({ content: reply, ephemeral: true }); else return channel.send(reply);
+    }
+  }
+
+  if (sub === "set-sail") {
+    let target, episode;
+    if (isInteraction) {
+      target = interactionOrMessage.options.getUser("user");
+      episode = interactionOrMessage.options.getString("episode");
+    } else {
+      const parts = interactionOrMessage._rawParts || interactionOrMessage.content.trim().split(/\s+/);
+      // op owner set-sail <episode> <@user>
+      episode = parts[3];
+      const targetToken = parts[4] || parts[parts.length - 1];
+      target = targetToken ? { id: String(targetToken).replace(/[^0-9]/g, "") } : null;
+    }
+
+    if (!target || !target.id) {
+      const reply = "Target user not specified or invalid.";
+      if (isInteraction) return interactionOrMessage.reply({ content: reply, ephemeral: true }); else return channel.send(reply);
+    }
+
+    const epNum = parseInt(episode, 10) || 0;
+    try {
+      let sp = await SailProgress.findOne({ userId: target.id });
+      if (!sp) sp = new SailProgress({ userId: target.id });
+      sp.progress = epNum;
+      await sp.save();
+      const embed = new EmbedBuilder().setTitle("Sail Episode Set").setDescription(`Set sail progress for <@${target.id}> to episode ${epNum}`).setColor(0x3498db);
+      if (isInteraction) return interactionOrMessage.reply({ embeds: [embed], ephemeral: true }); else return channel.send({ embeds: [embed] });
+    } catch (err) {
+      console.error('set-sail error:', err);
+      const reply = "Failed to set sail progress.";
       if (isInteraction) return interactionOrMessage.reply({ content: reply, ephemeral: true }); else return channel.send(reply);
     }
   }

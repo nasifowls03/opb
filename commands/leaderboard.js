@@ -14,14 +14,14 @@ export async function execute(interactionOrMessage, client) {
 
   // Build initial leaderboard (level)
   try {
-    // Query top 10 by level
-    const topLevel = await Balance.find({}).sort({ level: -1, xp: -1 }).limit(10).lean();
+    // Query top 10 by userLevel from Progress
+    const topLevel = await Progress.find({}).sort({ userLevel: -1, userXp: -1 }).limit(10).lean();
 
     // Build lines
-    const lines = await Promise.all(topLevel.map(async (b, idx) => {
-      let name = b.userId;
-      try { const u = await client.users.fetch(String(b.userId)).catch(() => null); if (u) name = u.username; } catch (e) {}
-      return `**${idx + 1}. ${name}** — Level: ${b.level || 0}`;
+    const lines = await Promise.all(topLevel.map(async (p, idx) => {
+      let name = p.userId;
+      try { const u = await client.users.fetch(String(p.userId)).catch(() => null); if (u) name = u.username; } catch (e) {}
+      return `**${idx + 1}. ${name}** — Level: ${p.userLevel || 0}`;
     }));
 
     const embed = new EmbedBuilder().setTitle('Leaderboard — Level').setColor(0xFFFFFF).setDescription(lines.join('\n') || 'No data');

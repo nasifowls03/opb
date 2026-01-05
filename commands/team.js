@@ -4,6 +4,7 @@ import { cards, getCardById, getRankInfo, RANKS } from "../cards.js";
 import { computeTeamBoosts, computeTeamBoostsDetailed } from "../lib/boosts.js";
 import { roundNearestFive } from "../lib/stats.js";
 import WeaponInventory from "../models/WeaponInventory.js";
+import { parseHaki } from "../lib/haki.js";
 
 function levenshtein(a, b) {
   const dp = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
@@ -227,7 +228,6 @@ export async function execute(interactionOrMessage, client) {
       const userHaki = (entry && entry.haki) ? entry.haki : {};
       let armamentMultiplier = 1;
       try {
-        const { parseHaki } = await import('../lib/haki.js');
         const ph = parseHaki(card);
         if (ph && ph.armament && ph.armament.present) {
           const stars = Math.max(0, Number(userHaki.armament || 0));
@@ -241,12 +241,31 @@ export async function execute(interactionOrMessage, client) {
       const effectiveAttackMax = Math.round(baseAttackMax * (1 + cardBoost.atk / 100) * (armamentMultiplier || 1));
       const effectiveHealth = roundNearestFive(Math.round(baseHealth * (1 + cardBoost.hp / 100)));
 
+      // Apply banner boost if equipped
+      const bannerSignature = ['Alvida_c_01', 'heppoko_c_01', 'Peppoko_c_01', 'Poppoko_c_01', 'koby_c_01'];
+      let bannerBoosted = false;
+      let bannerBoostAtkPercent = 0;
+      let bannerBoostHpPercent = 0;
+      if (weaponInv && weaponInv.teamBanner && weaponInv.teamBanner === 'alvida_pirates_banner_c_01' && bannerSignature.includes(id)) {
+        // Apply 5% boost to ATK and HP
+        bannerBoosted = true;
+        bannerBoostAtkPercent = 5;
+        bannerBoostHpPercent = 5;
+      }
+
+      const bannerBoostedAttackMin = bannerBoosted ? Math.round(effectiveAttackMin * 1.05) : effectiveAttackMin;
+      const bannerBoostedAttackMax = bannerBoosted ? Math.round(effectiveAttackMax * 1.05) : effectiveAttackMax;
+      const bannerBoostedHealth = bannerBoosted ? roundNearestFive(Math.round(effectiveHealth * 1.05)) : effectiveHealth;
+
       const boostParts = [];
       if (cardBoost.atk) boostParts.push(`ATK+${cardBoost.atk}%`);
       if (cardBoost.hp) boostParts.push(`HP+${cardBoost.hp}%`);
+      if (bannerBoosted) {
+        boostParts.push(`ATK boosted +${bannerBoostAtkPercent}%`);
+        boostParts.push(`HP boosted +${bannerBoostHpPercent}%`);
+      }
       // Show Armament Haki contribution
       try {
-        const { parseHaki } = await import('../lib/haki.js');
         const ph = parseHaki(card);
         if (ph && ph.armament && ph.armament.present) {
           const stars = Math.max(0, Number(userHaki.armament || 0));
@@ -256,8 +275,8 @@ export async function execute(interactionOrMessage, client) {
       } catch (e) {}
       if (cardBoost.special) boostParts.push(`SP+${cardBoost.special}%`);
 
-      const attackDisplay = card.attackRange ? `${effectiveAttackMin} - ${effectiveAttackMax}` : effectiveAttackMin;
-      const value = `ATK: ${attackDisplay} | HP: ${effectiveHealth}${boostParts.length ? `\nBoost: ${boostParts.join('/')}` : ''}`;
+      const attackDisplay = card.attackRange ? `${bannerBoostedAttackMin} - ${bannerBoostedAttackMax}` : bannerBoostedAttackMin;
+      const value = `ATK: ${attackDisplay} | HP: ${bannerBoostedHealth}${boostParts.length ? `\nBoost: ${boostParts.join('/')}` : ''}`;
 
       return {
         name: `#${i+1}: ${card.name} (${card.rank})`,

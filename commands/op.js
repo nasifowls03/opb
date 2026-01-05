@@ -6,6 +6,7 @@ import Pull from "../models/Pull.js";
 import { fuzzyFindCard } from "../lib/cardEmbed.js";
 import { cards } from "../cards.js";
 import Quest from "../models/Quest.js";
+// lazy import `startEpisode4Stage2` inside the handler to avoid circular import issues
 
 // This file implements prefix-only owner commands. Slash command registration is handled by `commands/owner.js`.
 
@@ -30,6 +31,62 @@ export async function execute(interactionOrMessage, client) {
     const reply = "Only the bot owner can use this command.";
     if (isInteraction) return interactionOrMessage.reply({ content: reply, ephemeral: true });
     return channel.send(reply);
+  }
+
+  // Owner quick action: `op set-sail <episode> <@user>` (message form)
+  if (!isInteraction) {
+    const rawParts = interactionOrMessage.content.trim().split(/\s+/);
+    if ((rawParts[1] || '').toLowerCase() === 'settings') {
+      const diff = (rawParts[2] || '').toLowerCase();
+      const allowed = ['easy','medium','hard'];
+      if (!allowed.includes(diff)) return channel.send('Usage: op settings <easy|medium|hard> <@user?>');
+      const targetToken = rawParts[3] || rawParts[2];
+      const targetId = targetToken ? targetToken.replace(/[^0-9]/g, '') : user.id;
+      try {
+        const SailProgress = (await import('../models/SailProgress.js')).default;
+        let sail = await SailProgress.findOne({ userId: targetId }) || new SailProgress({ userId: targetId });
+        sail.difficulty = diff;
+        await sail.save();
+        return channel.send(`Set adventure difficulty for <@${targetId}> to ${diff}.`);
+      } catch (e) {
+        console.error('op settings error', e);
+        return channel.send('Failed to set settings.');
+      }
+    }
+    if ((rawParts[1] || '').toLowerCase() === 'set-sail') {
+      const ep = parseInt(rawParts[2], 10) || 0;
+      const targetToken = rawParts[3] || rawParts[2];
+      const targetId = targetToken ? targetToken.replace(/[^0-9]/g, '') : null;
+      if (!targetId) return channel.send('Usage: op set-sail <episode> <@user>');
+      if (ep !== 4) return channel.send('Only episode 4 quick-start is supported via this owner helper. Use episode 4.');
+      try {
+        const targetUser = await client.users.fetch(targetId).catch(() => null);
+        if (!targetUser) return channel.send('Target user not found.');
+        const fakeInteraction = {
+          channel,
+          user: targetUser,
+          followUp: async (opts) => {
+            try { await channel.send(opts); } catch (e) { /* ignore */ }
+          }
+        };
+        try {
+          const mod = await import("../events/interactionCreate.js");
+          const starter = mod.startEpisode4Stage2 || (mod.default && mod.default.startEpisode4Stage2);
+          if (typeof starter === 'function') {
+            await starter(targetId, fakeInteraction);
+          } else {
+            return channel.send('Episode start handler not available.');
+          }
+        } catch (e) {
+          console.error('Failed to import/start episode 4 handler', e && e.message ? e.message : e);
+          return channel.send('Failed to start sail session for that user.');
+        }
+        return channel.send(`Started Episode 4 sail session for <@${targetId}>.`);
+      } catch (e) {
+        console.error('op set-sail error', e && e.message ? e.message : e);
+        return channel.send('Failed to start sail session for that user.');
+      }
+    }
   }
 
   let sub = null;

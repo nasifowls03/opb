@@ -15,106 +15,190 @@ Episode embed construction
 - Image: Use `.setImage(url)` to display a banner for the episode.
 - XP line: Always compute and inject an `xpAmount` variable before building the embed. Use consistent difficulty mapping:
   - easy: 10 XP
-  - medium: 20 XP
-  - hard: 30 XP
-  - Always use the canonical mapping above for standard episodes. Do not apply ad-hoc higher values for specific episodes unless intentionally documented and implemented in code.
+  ```plaintext
+  Episode Embed & Sail Flow Guide
 
-XP awarding rules
-- XP is awarded to the user (progress.userXp) and each card in the active team.
-- Each card's leveling uses a flat 100 XP per level rule in this implementation.
-- When awarding XP to user and cards:
-  1. Add xpAmount.
-  2. While total XP >= 100, subtract 100 and increment level.
-  3. Persist changes by saving the `Progress` document and marking `cards` modified when appropriate.
-- `SailProgress.awardedXp` is used to avoid awarding the same XP more than once per episode/difficulty. Track with keys like `ep2_hard` or difficulty names.
+  Purpose
+  - Describe how to build episode embeds, XP awarding rules, reward conversion for duplicates, button customIds, and progression checks used in the sailing/story system.
 
-Duplicate reward conversion
-- When a card reward is given from sailing and the player already owns the card, convert the duplicate into 100 XP (not an extra card object). This 100 XP is applied to the existing card's XP and may cause level-ups per the usual 100 XP per level rule.
-- Implementation details:
-  - Ensure `progress.cards` is a `Map` (or converted to one) for `.get`/`.set` usage.
-  - On reward: if `progress.cards.has(cardId)`, add 100 to `entry.xp` and roll level-ups accordingly.
-  - If not owned, set `{ level: 1, xp: 0, count: 1 }`.
-  - Provide a human-readable `rewardsText` that marks duplicates (strike-through) and explains conversion to XP.
+  Files of interest
+  - events/interactionCreate.js — interaction handler and sail flow (battle helpers at module scope)
+  - commands/sail.js — slash command that shows the current sail progress / episode intro
+  - models/SailProgress.js — per-user sail progress and awardedXp tracking
+  - models/Progress.js — player collection and team data
 
-- Battle/session flow and enemies
-- Battles are tracked in `global.SAIL_SESSIONS` keyed by a session id like `sail_<userId>_<timestamp>`.
-- `startSailTurn(sessionId, channel)` drives the turn UI and enemy progression.
-- Enemy selection is episode-aware. For example:
-  - Episode 1 progression uses `Poppoko` -> `Alvida` (legacy behavior).
-  - Episode 2 progression should use `Helmeppo` -> `Marine` (no accidental Popokko/Alvida presence).
-- After replacing enemies, apply a difficulty multiplier to stats: easy=1, medium=1.25, hard=1.5.
-- After replacing enemies, apply a difficulty multiplier to stats: easy=1, medium=1.25, hard=1.5.
+  Episode stages (four stage types)
+  - Embed stages: Narrative or informational embeds (no combat). Examples: scene-setting, cutscenes, character dialogue. Implement by sending a public embed, advancing `session.phase`, and calling `startSailTurn(sessionId, channel)` after a short delay (1-2s) to continue progression. Embed stages must include a grey "Next Stage" button (use `ButtonStyle.Secondary`) labelled `Next Stage` (customId pattern: `sail_next:<sessionId>:<phase>`). Embeds should use an island-appropriate accent color (for Orange Town use `0xFA8628`).
+  - Decision stages: Places where the player must click a button to continue or choose a path. These are UI steps that may lead to another embed or a fight. Implement by sending an embed with a `Next` or choice button (customId using `sail_ep_choice:<sessionId>:<choice>` or `sail_next:<sessionId>`). Collect the response and then advance `session.phase` accordingly.
+  - Fight stages: Combat encounters driven by `startSailTurn`. These spawn `session.enemies` and use the regular sail combat UI (select char, choose action, select target).
+  - Accuracy embed stages (new): Timed accuracy interactions where a visible progress bar moves from start to end and the session owner must click a provided button to stop it. Requirements:
+    - Display a progress bar in the embed (or as ephemeral UI) that updates every 0.5s from 0% to 100%.
+    - Provide a single action button (suggested customId pattern: `sail_accuracy:<sessionId>:<phase>`; label example: `Now!`).
+    - The user must click the button to stop the bar; the server measures how close the stop time is to the bar's end.
+    - Define an "accuracy window" (e.g. last X% or last Y ms) that counts as success; clicks outside the window count as failure.
+    - On success, advance `session.phase` and continue normal flow; on failure record a loss for this episode and apply the configured cooldown (default: 5 minutes) before the player can `op sail` again.
+    - Accuracy embeds should be permission-checked so only the session owner may click the button; defer the interaction and then resolve success/failure server-side.
+    - Scope note: Accuracy embeds may be episode-specific. If an accuracy check only affects a single episode (for example Episode 7), document that in the episode's section and ensure `startSailTurn` handles the episode-scoped outcome.
 
-Map display rules
-- The `/map` command shows the world map with per-island and per-episode progress.
-- Islands are defined with episode ranges (example configuration in code):
-  - Goat Island: episode 1
-  - Shells Town: episodes 2-3
-  - Orange Town: episodes 4-8
-  - Syrup Village: episodes 9-18
-  - Baratie: episodes 19-30
-  - Arlong Park: episodes 31-44
-  - Loguetown: episodes 45-53
-  - Warship Island: episodes 54-61 (this island is displayed but excluded from the East Blue total tally)
-- Display rules:
-  - The top-level `East Blue` line shows the sum of stars for all East Blue islands except any islands explicitly marked `excludeFromEastBlue` (e.g., Warship Island).
-  - The East Blue progress bar is an 8-segment bar computed from total stars / max stars.
-  - Each island displays its own `?/? ✭` total on the same line, followed by an 8-segment progress bar on its own line.
-  - Below each island bar, list every episode on its own line. For each episode:
-    - If the episode is not yet reached (episode number > `SailProgress.progress`) show a lock `⛓` next to it.
-    - If the episode has been completed (episode number < `SailProgress.progress`) show the earned stars as `x/3 ✭`.
-    - If the episode is the currently unlocked one (episode number === `SailProgress.progress`), show the episode name with no icon (available to start).
-  - Include simple `Back` / `Next` navigation buttons on the map (UI-only; handlers can be implemented later).
+  General rules
+  - Represent story progression with `session.phase` integers. Each phase maps to a stage (embed/decision/fight). `startSailTurn` should switch behavior based on `session.episode` and `session.phase`.
+  - After sending an embed (embed stage) advance `session.phase` then call `startSailTurn(sessionId, channel)` after 1-2000ms so the next stage appears (narrative -> fight or next embed).
+  - Decision stages should wait for the user's button click; on click defer the interaction, advance `session.phase`, and call `startSailTurn` to continue.
+  - Fight stages should set `session.enemies` and appropriate `session.phase` so that when enemies are all defeated the code advances to the next phase (either an embed, decision, or reward stage) instead of ending the episode prematurely.
 
-Buttons / customId formats
-- `sail:<userId>:sail` — used for the main sail action (progress/unlock). NOTE: do not auto-advance to a later episode via this button; require completing the prior episode's battle.
-- `sail:<userId>:map` — open the map/menu for sailing.
-- `sail_battle:<userId>:ready` — start Episode 1 battle (use existing team)
-- `sail_battle_ep2:<userId>:start` — start Episode 2 battle
-- `sail_battle_ep3:<userId>:start` — start Episode 3 battle (same flow as other sail_battle handlers)
-- `sail_selectchar:<sessionId>:<cardIndex>` — select a card to act in battle
-- `sail_chooseaction:<sessionId>:<action>:<cardIndex>` — choose attack / special etc.
-- `sail_selecttarget:<sessionId>:<targetIndex>` — target an enemy
-- `sail_heal:<sessionId>` and `sail_heal_item:<sessionId>:<itemId>` — heal actions
-- `map_nav:<back|next>:<userId>` — map pagination buttons (client-side UI only)
+  Episode 4 — Luffy's Past! (Orange Town)
+  Overview
+  - Title: Episode 4 - Luffy's Past! The Red-Haired Shanks Appears
+  - Image: https://files.catbox.moe/rf1czx.webp
+  - Theme: Explains the origin of Luffy's straw hat and features Buggy, Higuma, and the Lord of the Coast.
 
-Progression rules
-- `SailProgress.progress` indicates the next unlocked episode index:
-  - 0 = none (intro)
-  - 1 = episode 1 unlocked but not completed
-  - 2 = episode 1 completed, episode 2 unlocked
-  - 3 = episode 2 completed, episode 3 unlocked
-- Do not advance `sailProgress.progress` to the next episode until `endSailBattle(..., true)` sets the next progress value.
-- When an embed/button would otherwise increment progress (legacy code), replace it with an instructional message requiring the player to complete the battle first.
-- Important: when a user runs `/sail` and `sailProgress.progress` points to a newly unlocked episode (for example, the player completed Episode 2 and `progress === 3`), the command should present the episode intro embed (with XP, rewards and Sail-start button) instead of returning a short string like `Your current sail progress: Episode X`. Avoid sending terse progress-only replies in this case so players can immediately see the episode content and start the next battle.
+  Possible rewards (per difficulty)
+  - Money: 100 - 200 beli (scaled by difficulty)
+  - Chest(s): 1 C-tier chest (count may vary per difficulty)
+  - Item: 1x Straw Hat item blueprint (`Strawhat_blueprint_s_01`) — blueprint, not the final weapon
+  - Exclusive (hard-only): `Higuma` card (enemy becomes collectible on hard) and `Lord of the Coast` (hard-only)
 
-Persistence notes
-- Some older stored documents may have `cards` as plain objects. Convert with `new Map(Object.entries(cardsObj || {}))` when reading, and save as needed.
-- Use `progress.markModified('cards')` before saving if Mongoose cannot detect nested Map changes.
+  Episode 4 stages (canonical phase mapping)
+  - Phase 6 (Embed / Rewards stage): Shanks rescues Luffy but loses his left arm (embed). Show reward embed summarizing loot depending on difficulty. Include image: https://files.catbox.moe/kfouk3.webp
+    - UI: Rewards embed should use Orange Town accent color `0xFA8628` and include a grey `Next Stage` or `Claim Rewards` button (`ButtonStyle.Secondary`) for the session owner. On click, defer the interaction and run the reward distribution logic in `endSailBattle` for `session.episode === 4`.
 
-Testing checklist
-- Start with a fresh user and walk the sail flow:
-  1. `/sail` -> select difficulty -> click `Sail` -> Episode 1 embed appears with bold title and XP shown.
-  2. Click `I'm ready!` -> start battle -> defeat enemies -> confirm rewards: duplicate card converts to +1 level and `rewardsText` explains conversion.
-  3. After victory, ensure `SailProgress.progress` increments and Episode 2 embed is available.
+  Episode 5 — Fear, Mysterious Power! Pirate Clown Captain Buggy! (Orange Town)
+  Overview
+  - Title: Episode 5 - Fear, Mysterious Power! Pirate Clown Captain Buggy!
+  - Image: https://files.catbox.moe/euwxw2.webp
+  - Author (embed field for all non-fight embeds): Orange town - East Blue
+  - Accent color (non-fight embeds): 0xFA8628
+
+  Possible rewards (per difficulty)
+  - Money: 100 - 200 beli (scaled by difficulty)
+  - Chest(s): 1 C-tier chest
+
+  Episode 5 stages (canonical phase mapping)
+  - Phase 1 (Embed stage): Stage 1: Alliance with Nami
+    - Image: https://files.catbox.moe/tr1o0x.webp
+    - Description: After collaborating with Luffy to escape from the Buggy Pirates, they find refuge at a restaurant, where Nami reveals her goal of collecting 100 million Berries and demonstrates her navigation skills.
+    - UI: Embed (author: Orange town - East Blue, color `0xFA8628`) with a grey `Next Stage` button (customId: `sail_next:<sessionId>:2`). On click, advance `session.phase = 2` and call `startSailTurn`.
+
+  - Phase 2 (Embed stage): Stage 2: Betrayal!
+    - Image: https://files.catbox.moe/ikhd91.webp
+    - Description: Nami betrays Luffy, tying him up and handing him to the Buggy Pirates. Buggy locks Luffy in a cage and readies a Buggy Ball; pirates fire into the distance destroying a row of houses. Zoro notices the explosion as he arrives in town.
+    - UI: Embed (author: Orange town - East Blue, color `0xFA8628`) with a grey `Next Stage` button (customId: `sail_next:<sessionId>:3`). On click, advance `session.phase = 3` and call `startSailTurn`.
+
+  - Phase 3 (Decision stage): Stage 3: Save Luffy?
+    - Image: https://files.catbox.moe/arz1tu.webp
+    - Description: Buggy orders Nami to fire a Buggy Ball at Luffy — will she obey?
+    - Choices (buttons):
+      - `No` (customId: `sail_ep_choice:<sessionId>:save_no`) — consequences: `-1 karma`, leads to `secret death stage` (phase 99)
+      - `Yes` (customId: `sail_ep_choice:<sessionId>:save_yes`) — consequences: `+1 karma`, advances to Phase 4 (set `session.phase = 4`)
+    - UI: Decision buttons must verify session owner. On click defer the interaction and call `startSailTurn` to continue.
+
+  - Phase 4 (Fight stage): Mini Fight vs Buggy
+    - Enemy: Buggy
+    - Health: 160
+    - Attack: 20 - 35
+    - Special (used at start of Buggy's turn): Bara Bara festival — 100 - 140 attack
+    - Implementation: spawn Buggy in `session.enemies` with difficulty multipliers on HP and attack ranges. On victory, present rewards embed and a `Next Sail` button to finish the episode.
+
+  - Phase 99 (Secret stage - death): You Died!
+    - Image: https://files.catbox.moe/c9v55d.webp
+    - Description (embed): You Died! What did you think would have happened? Try not killing yourself next time!
+    - Effect: This counts as a battle loss (apply 5 minute cooldown, no rewards). Advance session/end accordingly as a loss.
+
+  Notes
+  - Fight stages should not include the `Author` or `color` styling; keep those only on narrative embeds and decisions per the guide.
+
+  Episode 6 — Desperate Situation! Beast Tamer Mohji vs. Luffy! (Orange Town)
+  Overview
+  - Title: Episode 6 - Desperate Situation! Beast Tamer Mohji vs. Luffy!
+  - Image: https://files.catbox.moe/gzwyfp.webp
+  - Author (embed field for all non-fight embeds): Orange town - East Blue
+  - Accent color (non-fight embeds): 0xFA8628
+
+  Possible rewards (per difficulty)
+  - Money: 100 - 200 beli (scaled by difficulty)
+  - Chest(s): 1 C-tier chest
+  - Cards: 1x Chouchou card, 1x Boodle card
+  - Hard-only exclusives: 1x Mohji card, 1x Richie card
+
+  Episode 6 stages (canonical phase mapping)
+  - Phase 1 (Embed stage): Chouchou the dog
+    - Image: https://files.catbox.moe/4ci3uu.webp
+    - Description: Luffy meets Chouchou, a dog defending a shop. The mayor explains Chouchou's devotion; Nami arrives with the key to Luffy's cage but Chouchou swallows the key before it can be used.
+    - UI: Embed (author: Orange town - East Blue, color `0xFA8628`) with a grey `Next Stage` button (customId: `sail_next:<sessionId>:2`). On click, advance `session.phase = 2` and call `startSailTurn`.
+
+  - Phase 2 (Fight stage): Fight vs Mohji
+    - Image (optional for fight embed): https://files.catbox.moe/ (use the provided fight image if available)
+    - Enemy: Mohji (with Richie as beast partner if desired per difficulty)
+    - Health: 130
+    - Attack: 14 - 24
+    - Implementation: spawn Mohji in `session.enemies`. Apply difficulty multipliers; on victory advance `session.phase = 3`.
+
+  - Phase 3 (Embed stage): Buggy’s wrath
+    - Image: https://files.catbox.moe/khynek.webp
+    - Description: Buggy fires a Buggy Ball which destroys the mayor's house; Zoro is caught in the blast but survives. The mayor confronts Buggy for his callous invasion.
+    - UI: Embed (author: Orange town - East Blue, color `0xFA8628`) with a grey `Next Stage` or `Claim Rewards` button. On click, present the reward embed and a `Next Sail` button to finish the episode.
+
+  Notes
+  - Include the Chouchou and Boodle cards as normal drops; award Mohji/Richie cards only on hard difficulty via `endSailBattle` for `session.episode === 6`.
+
+  End of appended episodes
+  - Phase 1 (Embed stage): Nami tricks the three Buggy Pirates. Send an episode-style embed after the player clicks "I'm ready!". (Image: https://files.catbox.moe/rf1czx.webp)
+    - Description: The burglar girl's dinghy is discovered by three Buggy Pirates while at sea. Pretending to be a desperate, stranded woman, she lures the pirates on her boat with promises of treasure. However, she secretly boards the Buggy Pirates' boat and sails away from them without their knowledge. The ship the pirates are on capsizes from a windstorm.
+    - UI: Embed (use color `0xFA8628` for Orange Town) with the provided image and a grey `Next Stage` button (`ButtonStyle.Secondary`) labeled `Next Stage` (customId: `sail_next:<sessionId>:2`). Only the session owner may click this button; on click defer the interaction, advance `session.phase` to 2 and call `startSailTurn`.
+
+  - Phase 2 (Fight stage): Fight 3 Buggy Pirates (combat). Each pirate stats:
+    - Health: 70
+    - Attack: 7 - 13
+    - Implementation: spawn 3 enemies in `session.enemies` with the above stats multiplied by difficulty multipliers (easy=1, medium=1.25, hard=1.5). After victory, set `session.phase = 3` and present a `Next` button (or auto-advance to Phase 3 embed after short delay).
+
+  - Phase 3 (Embed stage): Luffy's backstory embed. (Image: https://files.catbox.moe/n53m1z.webp)
+    - Description: In his childhood Luffy befriended Shanks... Higuma abducts Luffy; Sea King attack; Shanks intervenes later.
+    - UI: Embed (use color `0xFA8628` for Orange Town) with the provided image and a grey `Next Stage` button (`ButtonStyle.Secondary`) labeled `Next Stage` (customId: `sail_next:<sessionId>:4`). Only the session owner may click; on click defer, set `session.phase = 4` and call `startSailTurn`.
+
+  - Phase 4 (Fight stage): Fight Higuma (solo or with small support). Stats:
+    - Higuma — Health: 105, Attack: 14 - 24
+    - Implementation: spawn Higuma in `session.enemies`. After victory advance `session.phase = 5` and show `Next` button.
+
+  - Phase 5 (Fight stage): Fight Lord of the Coast. Stats:
+    - Lord of the Coast — Health: 160, Attack: 20 - 30
+    - Implementation: spawn Lord of the Coast in `session.enemies`. After victory advance `session.phase = 6`.
+
+  - Phase 6 (Embed / Rewards stage): Shanks rescues Luffy but loses his left arm (embed). Show reward embed summarizing loot depending on difficulty. Include image: https://files.catbox.moe/kfouk3.webp
+    - UI: Rewards embed should use Orange Town accent color `0xFA8628` and include a grey `Next Stage` or `Claim Rewards` button (`ButtonStyle.Secondary`) for the session owner. On click, defer the interaction and run the reward distribution logic in `endSailBattle` for `session.episode === 4`.
+
+  Notes for implementers
+  - Do not mark the episode completed after Phase 2. Ensure that `endSailBattle` checks `session.phase` and `session.episode` to determine whether to advance to the next phase or conclude the episode. For Episode 4, when the Buggy Pirates (Phase 2) are defeated, the code must set `session.phase = 3` and present the Phase 3 embed instead of calling `endSailBattle(..., true)` to finish the episode.
+  - If using a helper like `startEpisode4Stage2` to spawn the Buggy Pirates, initialize `session.phase = 2` (or the next phase) only if appropriate — prefer explicit phase assignments in the flow so `startSailTurn` doesn't re-run the same spawn or terminate early.
+  - Use `session.userId` and `session.sessionId` consistent with other sail flows. For decision/next buttons prefer `sail_next:<sessionId>:<phase>` or similar pattern to collect the user's click and advance `session.phase` safely.
+  - Apply difficulty multipliers to enemy HP and attack ranges when creating enemy objects.
+  - For hard-only collectible enemies (Higuma / Lord of the Coast), award the card via `endSailBattle` only when `session.difficulty === 'hard'` (or numeric diff mapping). Otherwise, they are regular enemies that drop no collectible card.
+
+  Example quick checklist when adding Episode 4 code
+  - Add Episode 4 intro embed in `commands/sail.js` with the same pattern as other episodes (xp mapping, rewards list, image).
+  - Register `sail_battle_ep4:<userId>:start` handler in `events/interactionCreate.js` to initialize a `session` with `episode: 4, phase: 1` and call `startSailTurn(sessionId, channel)`.
+  - Implement Phase handlers in `startSailTurn` (or helper functions): Phase 1 -> send embed -> wait for `sail_next` click -> Phase 2 spawn enemies; Phase 2 -> on victory set phase 3; Phase 3 -> embed -> Phase 4 spawn Higuma; Phase 4 -> on victory set phase 5; Phase 5 -> spawn Lord -> on victory advance to rewards.
+  - Implement reward branch in `endSailBattle` for `session.episode === 4` to give the straw hat blueprint and hard-mode exclusive cards as described.
+
+  Episode implementation sequence (canonical)
+  - 1) `commands/sail.js` displays the episode intro embed (title, image, rewards, `Sail to Episode N` button).
+  - 2) User clicks the `Sail to Episode N` button -> the `events/interactionCreate.js` handler for `sail_battle_epN:<userId>:start` must immediately acknowledge the interaction (use `deferUpdate()` or `update()`), then call a helper like `startEpisodeNStage2(userId, interaction)` to initialize the runtime session.
+  - 3) `startEpisodeNStage2` should create and store the `session` in `global.SAIL_SESSIONS` with fields: `userId`, `sessionId`, `cards`, `enemies` (empty if phase 1 is an embed), `phase: 1`, `episode: N`, `difficulty`, `channelId`, and any other flags. Do NOT spawn the first narrative embed from the command handler; leave progression to `startSailTurn` to centralize logic.
+  - 4) Call `startSailTurn(sessionId, channel)` once the session is stored. `startSailTurn` is responsible for sending embed stages, spawning enemies for fight stages, creating UI buttons and collectors, and setting `session.phase` to the next numeric phase when appropriate.
+  - 5) For embed stages `startSailTurn` should send a styled embed with a grey `Next Stage` (`sail_next:<sessionId>:<phase>`) button and return. The `sail_next` button handler must verify the session owner, defer the interaction, set `session.phase` to the requested next phase, and call `startSailTurn` again.
+  - 6) For fight stages `startSailTurn` should set `session.enemies`, apply difficulty multipliers, and then send the battle embed with action/Haki/heal buttons. After the fight is resolved (enemies all dead), `startSailTurn` must detect that and either advance to the next phase (embed/decision/fight) or call `endSailBattle(sessionId, channel, true)` only when the episode is truly finished.
+
+  This canonical sequence keeps episode control centralized in `startSailTurn`, avoids duplicate embeds, and makes phase transitions explicit and testable.
+
+  Implementation requirement: whenever new episode content is added to this guide, the implementer must also add the real code implementing that episode into `events/interactionCreate.js` (exported helpers like `startEpisodeNStage2` and the matching `sail_battle_epN` button handlers). The guide entries should be accompanied by working code so episodes are playable.
+
+  Testing guidance
+  - Walk through Episode 4 as a test user on each difficulty to confirm:
+    - Phase transitions (embed -> fight -> embed -> fight -> fight -> rewards).
+    - `Next`/decision buttons work and only the session owner can click them.
+    - Hard-mode exclusives awarded only on hard.
+
+  Contact
+  - For clarifications or changes to reward conversions (e.g. convert to XP instead of level), update the conversion block in `events/interactionCreate.js` and document the change here.
+
+  ```
   4. Confirm Episode 2 enemies are Helmeppo/Marine and not Poppoko/Alvida.
-
-Maintenance
-- Keep embed titles consistent. Compute dynamic values (xpAmount, reward lists) in code and avoid relying on templated strings without variable definition.
-- When adding new episodes, follow the same construction pattern: compute XP, compose bold title, list rewards, add `sail_battle` buttons for starting battles, and register episode-specific enemy progression in `startSailTurn`.
- - When adding new episodes, follow the same construction pattern: compute XP, compose bold title, list rewards, add `sail_battle` buttons for starting battles, and register episode-specific enemy progression in `startSailTurn`.
-
-Phase initialization rule
-- If a `startEpisodeXStageY` helper spawns the first wave of enemies immediately (for example, Episode 2 starts with Helmeppo already present, Episode 3 starts with the three Marines), set the session's `phase` to the *next* numeric phase so the `startSailTurn` progression logic advances to the following encounter rather than re-spawning the same wave. Example: when you set `enemies` to Helmeppo in `startEpisode2Stage2`, initialize `phase: 2` so the next spawn is the Marines instead of Helmeppo being spawned again.
-
-Episode 3 rewards
-- Episode 3 should have its own reward branch in `endSailBattle` (do not fall into the generic else branch). Episode 3 rewards include:
-  - 250-500 beli
-  - 1-2 C chests
-  - `1 B` chest and `axehandmorgan_b_01` (Axe-Hand Morgan) when cleared on `hard` difficulty
-  - `reset token`: awarded only on `hard` difficulty for Episode 3
-
-Make sure `endSailBattle` checks `session.episode === 3` before the generic else branch so Episode 3 rewards are applied correctly.
-
-Contact
-- For clarifications or changes to reward conversions (e.g. convert to XP instead of level), update the conversion block in `events/interactionCreate.js` and document the change here.

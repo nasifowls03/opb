@@ -10,6 +10,7 @@ import WeaponInventory from "../models/WeaponInventory.js";
 import { buildWeaponEmbed, buildUserWeaponEmbed } from "../lib/weaponEmbed.js";
 import { cards, getCardById, getRankInfo } from "../cards.js";
 import { buildCardEmbed, buildUserCardEmbed } from "../lib/cardEmbed.js";
+import { computeTeamBoostsDetailed } from "../lib/boosts.js";
 
 function getEvolutionChain(rootCard) {
   const chain = [];

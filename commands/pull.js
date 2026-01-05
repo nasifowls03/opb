@@ -120,30 +120,40 @@ export async function execute(interactionOrMessage, client) {
   }
 
   // perform pull (probability-driven) with 100-pull pity and level sampling
-  // determine current position in 100-pull pity cycle (1..100)
-  const total = pullDoc.totalPulls || 0;
-  const cyclePos = (total % 100) === 0 ? 100 : (total % 100);
-
-  // Get user's karma to modify probabilities
+  // Load user's persistent progress (karma and persistent total pulls used for pity)
   let progDoc = await Progress.findOne({ userId });
   if (!progDoc) {
     progDoc = new Progress({ userId, cards: {} });
   }
   const karma = progDoc.karma || 0;
 
-  // Modify probabilities based on karma (higher karma = worse odds)
+  // Determine effective pity length (negative karma increases pity requirement)
+  const negativePenalty = Math.max(0, -(karma || 0));
+  const pityLength = 100 + negativePenalty;
+
+  // compute the cycle position using persistent totalPulls (include this pull in count)
+  const totalAllBefore = progDoc.totalPulls || 0;
+  const totalAll = totalAllBefore + 1; // this pull
+  const cyclePos = (totalAll % pityLength) === 0 ? pityLength : (totalAll % pityLength);
+
+  // Modify probabilities based on karma: positive karma is good, negative is bad
   let adjustedProbabilities = { ...PULL_PROBABILITIES };
-  if (karma > 0) {
-    // Bad karma reduces S and A rates, increases C rate
-    const karmaPenalty = Math.min(karma * 0.1, 0.5); // Max 50% penalty
-    adjustedProbabilities.S = Math.max(0.1, PULL_PROBABILITIES.S * (1 - karmaPenalty));
-    adjustedProbabilities.A = Math.max(1, PULL_PROBABILITIES.A * (1 - karmaPenalty * 0.5));
+  if (karma < 0) {
+    const bad = Math.min(Math.abs(karma) * 0.1, 0.5);
+    adjustedProbabilities.S = Math.max(0.1, PULL_PROBABILITIES.S * (1 - bad));
+    adjustedProbabilities.A = Math.max(1, PULL_PROBABILITIES.A * (1 - bad * 0.5));
     adjustedProbabilities.C = PULL_PROBABILITIES.C + (PULL_PROBABILITIES.S - adjustedProbabilities.S) + (PULL_PROBABILITIES.A - adjustedProbabilities.A) * 0.5;
+  } else if (karma > 0) {
+    const good = Math.min(karma * 0.05, 0.5);
+    adjustedProbabilities.S = Math.min(20, PULL_PROBABILITIES.S * (1 + good));
+    adjustedProbabilities.A = Math.min(30, PULL_PROBABILITIES.A * (1 + good * 0.5));
+    // Normalize C to keep total roughly similar
+    adjustedProbabilities.C = Math.max(1, PULL_PROBABILITIES.C - ((adjustedProbabilities.S - PULL_PROBABILITIES.S) + (adjustedProbabilities.A - PULL_PROBABILITIES.A) * 0.5));
   }
 
-  // guarantee S card on every 100th pull
+  // guarantee S card on every pityLength-th pull (persistent)
   let pulled = null;
-  if (cyclePos === 100) {
+  if (cyclePos === pityLength) {
     const { cards } = await import("../cards.js");
     const sPool = cards.filter((c) => !c.isUpgrade && c.rank && String(c.rank).toUpperCase() === "S");
     if (sPool.length > 0) pulled = sPool[Math.floor(Math.random() * sPool.length)];
@@ -248,6 +258,7 @@ export async function execute(interactionOrMessage, client) {
 
   // write back to progress doc (keep as Map for Mongoose tracking)
   progDoc.cards = userCardsMap;
+  progDoc.totalPulls = totalAll; // persist overall pull count for pity
   progDoc.markModified('cards');
   await progDoc.save();
 

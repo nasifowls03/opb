@@ -47,11 +47,15 @@ export async function execute(interactionOrMessage, client) {
 
   const userId = user.id;
 
+  // Ensure inventory exists and has chest defaults to avoid transient missing fields
   let inventory = await Inventory.findOne({ userId });
-  if (!inventory) inventory = new Inventory({ userId });
-
-  if (!inventory.chests[rank] || inventory.chests[rank] < amount) {
-    const replyText = `You don't have enough ${rank} rank chests! You have: ${inventory.chests[rank] || 0}`;
+  if (!inventory) {
+    inventory = new Inventory({ userId, items: {}, chests: { C:0, B:0, A:0, S:0 }, xpBottles: 0, xpScrolls: 0, xpBooks: 0 });
+  }
+  inventory.chests = inventory.chests || { C:0, B:0, A:0, S:0 };
+  const available = typeof inventory.chests[rank] === 'number' ? inventory.chests[rank] : 0;
+  if (available < amount) {
+    const replyText = `You don't have enough ${rank} rank chests! You have: ${available}`;
     if (isInteraction) return interactionOrMessage.reply(replyText);
     return channel.send(replyText);
   }

@@ -1,0 +1,145 @@
+const startEpisode4Stage2 = async (userId, interaction) => {
+  const Progress = (await import("../models/Progress.js")).default;
+  const progress = await Progress.findOne({ userId });
+  if (!progress || !progress.team || progress.team.length === 0) {
+    try {
+      await interaction.followUp({ content: "You need a team to sail. Use /team to set your team.", ephemeral: true });
+    } catch (e) {
+      await interaction.channel.send({ content: "You need a team to sail. Use /team to set your team." });
+    }
+    return;
+  }
+
+  // Initial enemies: 3 Buggy Pirates (Stage 2), then Higuma and Lord of the Coast (Stage 4)
+  // Stage 1: Nami tricks 3 Buggy Pirates (not fought)
+  // Stage 2: Fight 3 Buggy Pirates
+  const enemies = [
+    { name: 'Buggy Pirate', health: 70, maxHealth: 70, attackRange: [7,13], power: 7 },
+    { name: 'Buggy Pirate', health: 70, maxHealth: 70, attackRange: [7,13], power: 7 },
+    { name: 'Buggy Pirate', health: 70, maxHealth: 70, attackRange: [7,13], power: 7 }
+  ];
+
+  const SailProgress = (await import("../models/SailProgress.js")).default;
+  const sailProgress = await SailProgress.findOne({ userId });
+  const difficulty = (sailProgress && sailProgress.difficulty) || 'easy';
+  const multiplier = difficulty === 'hard' ? 1.5 : difficulty === 'medium' ? 1.25 : 1;
+  enemies.forEach(enemy => {
+    enemy.health = roundNearestFive(enemy.health * multiplier);
+    enemy.maxHealth = enemy.health;
+    enemy.attackRange = [Math.ceil(enemy.attackRange[0] * multiplier), Math.ceil(enemy.attackRange[1] * multiplier)];
+    enemy.power = Math.ceil(enemy.power * multiplier);
+  });
+
+  const sessionId = `sail_ep4_${userId}_${Date.now()}`;
+  global.SAIL_SESSIONS = global.SAIL_SESSIONS || new Map();
+
+  const WeaponInventory = (await import('../models/WeaponInventory.js')).default;
+  const winv = await WeaponInventory.findOne({ userId });
+  const hasBanner = winv && winv.teamBanner === 'alvida_pirates_banner_c_01';
+  const { computeTeamBoosts } = await import("../lib/boosts.js");
+  const { getCardById } = await import("../cards.js");
+
+  function getEquippedWeaponForCard(winv, cardId) {
+    if (!winv || !winv.weapons) return null;
+    if (winv.weapons instanceof Map) {
+      for (const [wid, w] of winv.weapons.entries()) {
+        if (w && w.equippedTo === cardId) {
+          const wcard = getCardById(wid);
+          if (wcard) return { id: wid, card: wcard, ...w };
+        }
+      }
+    } else {
+      for (const [wid, w] of Object.entries(winv.weapons || {})) {
+        if (w && w.equippedTo === cardId) {
+          const wcard = getCardById(wid);
+          if (wcard) return { id: wid, card: wcard, ...w };
+        }
+      }
+    }
+    return null;
+  }
+
+  const p1TeamBoosts = computeTeamBoosts(progress.team || [], progress.cards || null, null);
+  const p1Cards = progress.team.map(cardId => {
+    const card = getCardById(cardId);
+    const hasMap = progress.cards && typeof progress.cards.get === 'function';
+    const progressCard = hasMap ? (progress.cards.get(cardId) || { level: 0, xp: 0 }) : (progress.cards[cardId] || { level: 0, xp: 0 });
+    const level = progressCard.level || 0;
+    const mult = 1 + (level * 0.01);
+    let health = Math.round((card.health || 0) * mult);
+    let attackMin = Math.round(((card.attackRange && card.attackRange[0]) || 0) * mult);
+    let attackMax = Math.round(((card.attackRange && card.attackRange[1]) || 0) * mult);
+    const special = card.specialAttack ? { ...card.specialAttack, range: [(card.specialAttack.range[0] || 0) * mult, (card.specialAttack.range[1] || 0) * mult] } : null;
+    let power = Math.round((card.power || 0) * mult);
+
+    const equipped = getEquippedWeaponForCard(winv, cardId);
+    if (equipped && equipped.card && card.signatureWeapon === equipped.id) {
+      const weaponCard = equipped.card;
+      const weaponLevel = equipped.level || 1;
+      const weaponLevelBoost = (weaponLevel - 1) * 0.01;
+      let sigBoost = 0;
+      if (weaponCard.signatureCards && Array.isArray(weaponCard.signatureCards)) {
+        const idx = weaponCard.signatureCards.indexOf(cardId);
+        if (idx > 0) sigBoost = 0.25;
+      }
+      const totalWeaponBoost = 1 + weaponLevelBoost + sigBoost;
+      if (weaponCard.boost) {
+        const atkBoost = Math.round((weaponCard.boost.atk || 0) * totalWeaponBoost);
+        const hpBoost = Math.round((weaponCard.boost.hp || 0) * totalWeaponBoost);
+        power += atkBoost;
+        attackMin += atkBoost;
+        attackMax += atkBoost;
+        health += hpBoost;
+      }
+    }
+
+    if (p1TeamBoosts.atk) {
+      const atkMul = 1 + (p1TeamBoosts.atk / 100);
+      attackMin = Math.round(attackMin * atkMul);
+      attackMax = Math.round(attackMax * atkMul);
+      power = Math.round(power * atkMul);
+    }
+    if (p1TeamBoosts.hp) {
+      const hpMul = 1 + (p1TeamBoosts.hp / 100);
+      health = Math.round(health * hpMul);
+    }
+    if (special && p1TeamBoosts.special) {
+      const spMul = 1 + (p1TeamBoosts.special / 100);
+      special.range = [Math.round(special.range[0] * spMul), Math.round(special.range[1] * spMul)];
+    }
+
+    const bannerSignature = ['Alvida_c_01', 'heppoko_c_01', 'Peppoko_c_01', 'Poppoko_c_01', 'koby_c_01'];
+    if (hasBanner && bannerSignature.includes(cardId)) {
+      attackMin = Math.round(attackMin * 1.05);
+      attackMax = Math.round(attackMax * 1.05);
+      power = Math.round(power * 1.05);
+      health = Math.round(health * 1.05);
+    }
+
+    const finalPower = roundNearestFive(Math.round(power));
+    const baseAttackMin = Math.round(attackMin);
+    const baseAttackMax = Math.round(attackMax);
+    const finalAttackMin = (hasBanner && bannerSignature.includes(cardId)) ? baseAttackMin : roundNearestFive(baseAttackMin);
+    const finalAttackMax = (hasBanner && bannerSignature.includes(cardId)) ? baseAttackMax : roundNearestFive(baseAttackMax);
+    const finalHealth = roundNearestFive(Math.round(health));
+    if (special && special.range) special.range = roundRangeToFive([Math.round(special.range[0] || 0), Math.round(special.range[1] || 0)]);
+
+    return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, stamina: 3, usedSpecial: false, attackedLastTurn: false };
+  });
+
+  global.SAIL_SESSIONS.set(sessionId, {
+    userId,
+    user: interaction.user,
+    cards: p1Cards,
+    lifeIndex: 0,
+    enemies,
+    phase: 2,
+    sessionId,
+    channelId: interaction.channel.id,
+    msgId: null,
+    difficulty,
+    episode: 4
+  });
+
+  await startSailTurn(sessionId, interaction.channel);
+};

@@ -1,7 +1,7 @@
 import { SlashCommandBuilder } from "discord.js";
 import Progress from "../models/Progress.js";
 import Balance from "../models/Balance.js";
-import { cards, getCardById } from "../cards.js";
+import { cards, getCardById, getRankInfo } from "../cards.js";
 
 export const data = new SlashCommandBuilder().setName("upgrade").setDescription("Upgrade a card").addStringOption(opt => opt.setName("card").setDescription("Card id or name").setRequired(true));
 
@@ -25,11 +25,26 @@ export async function execute(interactionOrMessage, client) {
   const userId = user.id;
 
   const query = isInteraction ? interactionOrMessage.options.getString("card") : interactionOrMessage.content.trim().split(/\s+/).slice(2).join(" ");
-  const baseCard = fuzzyFindCard(query);
+  let baseCard = fuzzyFindCard(query);
   if (!baseCard) {
     const reply = `Please state a valid card`;
     if (isInteraction) await interactionOrMessage.reply({ content: reply, ephemeral: true }); else await channel.send(reply);
     return;
+  }
+
+  // If multiple cards share the same name, prefer the version the user owns (so they can upgrade that exact copy)
+  let prog = await Progress.findOne({ userId });
+  if (!prog) prog = new Progress({ userId, cards: {} });
+  const cardsMap = prog.cards instanceof Map ? prog.cards : new Map(Object.entries(prog.cards || {}));
+  const same = cards.filter(c => (c.name || "").toLowerCase() === (baseCard.name || "").toLowerCase());
+  if (same.length > 1) {
+    let ownedCandidates = same.filter(c => (cardsMap.get(c.id) || {}).count > 0);
+    if (ownedCandidates.length > 0) {
+      // pick highest rank owned (prefer upgraded owned card if present)
+      ownedCandidates.sort((a,b) => (getRankInfo(b.rank)?.value||0) - (getRankInfo(a.rank)?.value||0));
+      // use the owned highest-rank as the baseCard for upgrade
+      baseCard = ownedCandidates[0];
+    }
   }
 
   // find upgrade target from baseCard.evolutions (first upgrade)
@@ -53,10 +68,7 @@ export async function execute(interactionOrMessage, client) {
     return;
   }
 
-  // load user's progress and balance
-  let prog = await Progress.findOne({ userId });
-  if (!prog) prog = new Progress({ userId, cards: {} });
-  const cardsMap = prog.cards instanceof Map ? prog.cards : new Map(Object.entries(prog.cards || {}));
+  // user's progress and cards are already loaded above (reuse `prog` and `cardsMap`)
 
   const baseEntry = cardsMap.get(baseCard.id);
   if (!baseEntry || (baseEntry.count || 0) <= 0) {

@@ -1,5 +1,6 @@
 import { SlashCommandBuilder, EmbedBuilder } from "discord.js";
 import { fuzzyFindCard } from "../lib/cardEmbed.js";
+import { cards, getRankInfo } from "../cards.js";
 import Progress from "../models/Progress.js";
 import Balance from "../models/Balance.js";
 
@@ -28,17 +29,29 @@ export async function execute(interactionOrMessage, client) {
     query = parts.slice(2).join(" ");
   }
 
-  const card = fuzzyFindCard(query);
+  let card = fuzzyFindCard(query);
   if (!card) {
     const reply = `Card not found: ${query}`;
     if (isInteraction) return interactionOrMessage.reply({ content: reply, ephemeral: true });
     return channel.send(reply);
   }
 
-  // load progress
+  // If multiple cards share the same name, prefer the version the user owns (highest rank)
   let prog = await Progress.findOne({ userId });
   if (!prog) prog = new Progress({ userId, cards: {} });
   const cardsMap = prog.cards instanceof Map ? prog.cards : new Map(Object.entries(prog.cards || {}));
+  const same = cards.filter(c => (c.name || "").toLowerCase() === (card.name || "").toLowerCase());
+  if (same.length > 1) {
+    // find owned cards among same-name group
+    let ownedCandidates = same.filter(c => (cardsMap.get(c.id) || {}).count > 0);
+    if (ownedCandidates.length > 0) {
+      // choose highest rank value among owned candidates
+      ownedCandidates.sort((a,b) => (getRankInfo(b.rank)?.value||0) - (getRankInfo(a.rank)?.value||0));
+      card = ownedCandidates[0];
+    }
+  }
+
+  // cardsMap already prepared above
   const entry = cardsMap.get(card.id) || { count: 0, xp: 0, level: 0 };
   if (!entry || (entry.count || 0) < 1) {
     const reply = `You don't own a copy of **${card.name}**.`;

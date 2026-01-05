@@ -20,7 +20,7 @@ const QUESTIONS = [
   { q: "How many berries did Nami have to gather for Arlong in order to free Cocoyasi Village?", a: ["10,000 Berries","1,000,000 Berries","100,000,000 Berries","10,000,000 Berries"], correct: 2 },
   { q: "Which devil fruit was the first to appear after Luffy's?", a: ["Mera Mera no Mi","Hie Hie no Mi","Gura Gura no Mi","Sube Sube no Mi (Alvida)"], correct: 3 },
   { q: "Which sword does Zoro use with his mouth?", a: ["Enma","Wado Ichimonji","Sandai Kitetsu","Shusui"], correct: 1 },
-  { q: "True/False: Gaimon isn't filler", a: ["False","True","False","True"], correct: 1 },
+  // Removed True/False/unprecised questions
   { q: "What was Luffy's first bounty?", a: ["1,500,000 Berries","300,000 Berries","30,000,000 Berries","5,000,000 Berries"], correct: 2 },
   { q: "What is Smoker's epithet?", a: ["The Smoky Marine","White Hunter","The White Chase","Iron Fist"], correct: 1 },
   { q: "What was the first island the Straw Hats visited in the Grand Line?", a: ["Reverse Mountain","Twin Cape","Whisky Peak","Little Garden"], correct: 1 },
@@ -37,10 +37,8 @@ const QUESTIONS = [
   { q: "Who was the first Marine Admiral to be introduced?", a: ["Sakazuki (Akainu)","Kuzan (Aokiji)","Borsalino (Kizaru)","Monkey D. Garp"], correct: 1 },
   { q: "For whom did Tom entrust the Pluton blueprints?", a: ["Franky","Iceberg","Nico Robin","Tom himself"], correct: 0 },
   { q: "Who was the Fleet Admiral of the Navy 3 decades ago?", a: ["Sengoku","Kong","Monkey D. Garp","Akainu"], correct: 1 },
-  { q: "True/False: Sanji has fought using his hands", a: ["False","True","False","True"], correct: 0 },
   { q: "Which weapon did Uso... Sogeking use to shoot the World Government flag in Enies Lobby?", a: ["A pistol","Kabuto (slingshot)","A cannon","A flare"], correct: 1 },
   { q: "What color is the transponder snail used to summon a Buster Call?", a: ["Blue","Golden (gold-colored)","Orange","Green"], correct: 1 },
-  { q: "What happened?", a: ["A battle","The World Government flag was shot down","An alliance","A betrayal"], correct: 1 },
   { q: "What is the name of Kizaru's fruit?", a: ["Goro Goro no Mi","Pika Pika no Mi","Hie Hie no Mi","Mera Mera no Mi"], correct: 1 },
   { q: "Which mark is the one used by Celestial Dragons?", a: ["Celestial Seal","Hoof of the Soaring Dragon","Saint Mark","Dragon Mark"], correct: 1 },
   { q: "Who opened the Gate of Justice to Marineford for Luffy and the Impel Down escapees?", a: ["Jinbe","Emporio Ivankov","Marco","Whitebeard"], correct: 1 },
@@ -58,7 +56,7 @@ const QUESTIONS = [
   { q: "What is the only race/tribe you can't find on Totto Land as mentioned in the arc?", a: ["Giants","Merfolk","Fishmen","Longarm"], correct: 0 },
   { q: "Who of these characters isn't royalty?", a: ["Pudding","Vivi","Nefertari Cobra","Nami"], correct: 3 },
   { q: "In which arc was advanced Armament Haki/Ryuo first utilized?", a: ["Dressrosa","Wano Country Arc","Punk Hazard","Sabaody"], correct: 0 },
-  { q: "True/False: Momonosuke's sister is the oiran of Wano", a: ["True","False","True","False"], correct: 0 },
+  // Removed True/False/unprecised questions
   { q: "Which devil fruit does Sasaki have?", a: ["Ryu Ryu no Mi, Model: Triceratops","Riki Riki no Mi","Tori Tori no Mi","Ushi Ushi no Mi"], correct: 0 },
   { q: "Who has the largest bust size of these characters?", a: ["Nami","Nico Robin","Tashigi","Boa Hancock"], correct: 3 },
   { q: "Who of these characters isn't a former Rocks Pirate?", a: ["Kaido","Shiki","Big Mom","Whitebeard"], correct: 0 }

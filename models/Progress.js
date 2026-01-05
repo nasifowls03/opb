@@ -14,7 +14,10 @@ const ProgressSchema = new mongoose.Schema({
   userXp: { type: Number, default: 0 },
   userLevel: { type: Number, default: 1 },
   claimedLevel: { type: Number, default: 0 },
-  karma: { type: Number, default: 0 }, // karma system: negative = good, positive = bad, max 100
+  // karma system: positive = good, negative = bad (negative increases pity requirement)
+  karma: { type: Number, default: 0 },
+  // persistent total pulls across windows used for pity calculations
+  totalPulls: { type: Number, default: 0 },
 });
 
 export default mongoose.models.Progress || mongoose.model("Progress", ProgressSchema);

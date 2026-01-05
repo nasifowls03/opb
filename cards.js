@@ -54,7 +54,7 @@ export const cards = [
     type: "Attack",
     specialAttack: { name: "Gear Second", range: [50, 80], gif: "https://files.catbox.moe/s3xyhm.gif" },
     ability: null,
-    image: "https://files.catbox.moe/abc_koby.webp",
+    image: "https://files.catbox.moe/wqrrqt.webp",
     evolutions: ["luffy_a_04"],
     isUpgrade: true,
     upgradeRequirements: { cost: 3200, minLevel: 20 },
@@ -70,7 +70,6 @@ export const cards = [
     specialAttack: { name: "Gear Second", range: [110, 160], gif: "https://files.catbox.moe/s3xyhm.gif" },
     ability: null,
     image: "https://files.catbox.moe/spyqxh.webp",
-    haki: ["observation","armament"],
     evolutions: ["luffy_s_05"],
     isUpgrade: true,
     upgradeRequirements: { cost: 7500, minLevel: 35 },
@@ -109,6 +108,27 @@ export const cards = [
     isUpgrade: true,
     upgradeRequirements: { cost: 150000, minLevel: 100 },
   },
+    // Straw Hat weapon (craftable from blueprint)
+    {
+      id: "Strawhat_a_01",
+      name: "Strawhat",
+      title: "Monkey D. Luffy's weapon",
+      rank: "A",
+      type: "weapon",
+      pullable: true,
+      boost: { atk: 10, spd: 0, hp: 0 },
+      signatureCards: ["luffy_c_01","luffy_b_02","luffy_b_03","luffy_a_04","luffy_s_05","luffy_ur_06","GolDRoger_ss_01","GolDRoger_ss_02","GolDRoger_ur_03","Shanks_c_01","Shank_a_02","Shanks_ss_03","Shanks_ur_04"],
+      mainCard: "luffy_ur_06",
+      image: "https://files.catbox.moe/placeholder.webp",
+      craftingRequirements: {
+        materials: {
+          "Leather": 8,
+          "Brass": 2
+        },
+        cost: 2500
+      },
+      evolutions: ["Strawhat_blueprint_s_01"],
+    },
   {
     id: "monkeydgarp_ss_01",
     name: "Monkey D. Garp",
@@ -462,19 +482,6 @@ export const cards = [
     evolutions: [],
   },
   {
-    id: "higuma_c_01",
-    name: "Higuma",
-    title: "Goa Kingdom",
-    rank: "C",
-    power: 35,
-    attackRange: [10, 20],
-    health: 90,
-    type: "Attack",
-    ability: null,
-    image: "https://files.catbox.moe/ck22xb.webp",
-    evolutions: [],
-  },
-  {
     id: "naguri_c_01",
     name: "Naguri",
     title: "Goa Kingdom",
@@ -593,6 +600,7 @@ export const cards = [
     image: "https://files.catbox.moe/nu2u2g.webp",
     evolutions: [],
     isUpgrade: true,
+    haki: ["observation"],
     upgradeRequirements: { cost: 7200, minLevel: 35 },
   },
   // SHELLS TOWN CHARACTERS
@@ -1592,6 +1600,7 @@ export const cards = [
     image: "https://files.catbox.moe/z5u2y0.jpg",
     evolutions: [],
     isUpgrade: true,
+    haki: ["observation","armament"],
     upgradeRequirements: { cost: 9500, minLevel: 42 },
   },
   // NAMI
@@ -1953,7 +1962,51 @@ export const cards = [
     evolutions: ["alvida_pirates_banner_c_01"],
     isUpgrade: false,
   },
+  {
+    id: "Strawhat_blueprint_s_01",
+    name: "Strawhat Blueprint",
+    title: "Monkey D. Luffy's weapon blueprint",
+    rank: "S",
+    type: "item",
+    ability: "Blueprint for crafting Strawhat",
+    image: "https://files.catbox.moe/placeholder.webp",
+    craftingRequirements: {
+      materials: {
+        "Leather": 8,
+        "Brass": 2
+      },
+      cost: 2500
+    },
+    evolutions: ["Strawhat_a_01"],
+    isUpgrade: false,
+  },
   // --- USER ADDED CARDS ---
+  {
+    id: "higuma_c_01",
+    name: "Higuma",
+    title: "Mountain Bandit Leader",
+    rank: "C",
+    power: 40,
+    attackRange: [14, 24],
+    health: 105,
+    type: "Attack",
+    ability: null,
+    image: "https://files.catbox.moe/placeholder.webp",
+    evolutions: [],
+  },
+  {
+    id: "lordofthecoast_c_01",
+    name: "Lord of the Coast",
+    title: "Sea King",
+    rank: "C",
+    power: 60,
+    attackRange: [20, 30],
+    health: 160,
+    type: "Attack",
+    ability: null,
+    image: "https://files.catbox.moe/placeholder.webp",
+    evolutions: [],
+  },
   // GOL D. ROGER
   {
     id: "GolDRoger_ss_01",
@@ -1966,6 +2019,7 @@ export const cards = [
     type: "Attack",
     ability: null,
     image: "https://files.catbox.moe/rm13ps.webp",
+    haki: ["observation","advancedarmament","advancedconqueror"],
     evolutions: ["GolDRoger_ss_02"],
   },
   {
@@ -1982,6 +2036,7 @@ export const cards = [
     image: "https://files.catbox.moe/934uq8.webp",
     evolutions: ["GolDRoger_ur_03"],
     isUpgrade: true,
+    haki: ["observation","advancedarmament","advancedconqueror"],
     upgradeRequirements: { cost: 50000, minLevel: 80 },
   },
   {
@@ -1998,6 +2053,7 @@ export const cards = [
     image: "https://files.catbox.moe/9nu1eb.webp",
     evolutions: [],
     isUpgrade: true,
+    haki:["observation","advancedarmament","advancedconqueror"],
     upgradeRequirements: { cost: 120000, minLevel: 120 },
   },
   // TASHIGI
@@ -2073,6 +2129,7 @@ export const cards = [
     image: "https://files.catbox.moe/44hh7g.webp",
     evolutions: ["Smoker_s_04"],
     isUpgrade: true,
+    haki: ["observation","armament"],
     upgradeRequirements: { cost: 20000, minLevel: 50 },
   },
   {
@@ -2089,6 +2146,7 @@ export const cards = [
     image: "https://files.catbox.moe/0xsg9e.webp",
     evolutions: [],
     isUpgrade: true,
+    haki: ["observation","armament"],
     upgradeRequirements: { cost: 40000, minLevel: 80 },
   },
   // LOGUETOWN (all title: "Loguetown")
@@ -2264,7 +2322,7 @@ export const cards = [
   // Shanks family
   { id: "Shanks_c_01", name: "Shanks", title: "kid Shanks ", rank: "C", power: 26, attackRange: [5, 14], health: 78, type: "Attack", ability: null, image: "https://files.catbox.moe/gf5475.webp", evolutions: ["Shank_a_02"] },
   { id: "Shank_a_02", name: "Shanks", title: "\"Red Haired\"", rank: "A", power: 160, attackRange: [26, 44], health: 210, type: "Attack", ability: null, image: "https://files.catbox.moe/2lqama.jpg", evolutions: ["Shanks_ss_03"], isUpgrade: true, upgradeRequirements: { cost: 4500, minLevel: 25 } },
-  { id: "Shanks_ss_03", name: "Shanks", title: "Captain of the Red-Haired pirates", rank: "SS", power: 620, attackRange: [110, 160], health: 540, type: "Attack", specialAttack: { name: "Divine Departure", range: [200, 260], gif: "https://files.catbox.moe/23ypxz.gif" }, ability: null, image: "https://files.catbox.moe/v1xyfc.jpg", evolutions: ["Shanks_ur_04"], isUpgrade: true, upgradeRequirements: { cost: 50000, minLevel: 75 }, haki: ["advancedobservation","armament","advancedconqueror"] },
+  { id: "Shanks_ss_03", name: "Shanks", title: "Captain of the Red-Haired pirates", rank: "SS", power: 620, attackRange: [110, 160], health: 540, type: "Attack", specialAttack: { name: "Divine Departure", range: [200, 260], gif: "https://files.catbox.moe/23ypxz.gif" }, ability: null, image: "https://files.catbox.moe/v1xyfc.jpg", evolutions: ["Shanks_ur_04"], isUpgrade: true, haki: ["advancedobservation","armament","advancedconqueror"], upgradeRequirements: { cost: 50000, minLevel: 75 }, haki: ["advancedobservation","armament","advancedconqueror"] },
   { id: "Shanks_ur_04", name: "Shanks", title: "Emperor of the New World", rank: "UR", power: 1100, attackRange: [170, 230], health: 820, type: "Attack", specialAttack: { name: "Divine Departure", range: [260, 320], gif: "https://files.catbox.moe/23ypxz.gif" }, ability: null, image: "https://files.catbox.moe/tj9er0.jpg", evolutions: [], isUpgrade: true, upgradeRequirements: { cost: 150000, minLevel: 100 }, haki: ["advancedobservation","armament","advancedconqueror"] },
 
   // Red-Haired crewmembers
@@ -2697,8 +2755,21 @@ export function getRandomCardByProbability(probabilities = { C: 50, B: 30, A: 15
     }
   }
   if (!chosenRank || chosenRank === "ITEM") chosenRank = "C";
-  // exclude upgraded versions from pulls
-  const pool = cards.filter((c) => !c.isUpgrade && c.rank && c.rank.toUpperCase() === String(chosenRank).toUpperCase() && c.pullable !== false);
+  // Build allowed base-card set: prefer the lowest-rank (base) variant for each card name
+  const allowedBaseIds = new Set();
+  const byName = {};
+  for (const c of cards) {
+    const name = (c.name || "").toLowerCase();
+    byName[name] = byName[name] || [];
+    byName[name].push(c);
+  }
+  for (const name of Object.keys(byName)) {
+    const group = byName[name].slice().sort((a,b) => (getRankInfo(a.rank)?.value||0) - (getRankInfo(b.rank)?.value||0));
+    if (group.length) allowedBaseIds.add(group[0].id);
+  }
+
+  // exclude upgraded versions from pulls; prefer base variants even if isUpgrade flag is missing
+  const pool = cards.filter((c) => allowedBaseIds.has(c.id) && c.rank && c.rank.toUpperCase() === String(chosenRank).toUpperCase() && c.pullable !== false);
   if (pool.length > 0) return pool[Math.floor(Math.random() * pool.length)];
   // fallback should also exclude upgrade variants so evolved cards are never pullable
   const fallback = cards.filter((c) => !c.isUpgrade && c.rank && c.rank.toUpperCase() !== "ITEM" && c.pullable !== false);

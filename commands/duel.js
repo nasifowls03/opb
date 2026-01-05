@@ -155,8 +155,8 @@ export async function execute(interactionOrMessage) {
         WeaponInventory.findOne({ userId: opponent.id })
       ]);
 
-      const p1HasBanner = p1Winv && p1Winv.weapons && Array.from(p1Winv.weapons.values()).some(w => w.id === 'alvida_pirates_banner_c_01');
-      const p2HasBanner = p2Winv && p2Winv.weapons && Array.from(p2Winv.weapons.values()).some(w => w.id === 'alvida_pirates_banner_c_01');
+      const p1HasBanner = p1Winv && p1Winv.teamBanner && p1Winv.teamBanner === 'alvida_pirates_banner_c_01';
+      const p2HasBanner = p2Winv && p2Winv.teamBanner && p2Winv.teamBanner === 'alvida_pirates_banner_c_01';
 
       function getEquippedWeaponForCard(winv, cardId) {
         if (!winv || !winv.weapons) return null;
@@ -249,7 +249,8 @@ export async function execute(interactionOrMessage) {
         const finalAttackMin = roundNearestFive(Math.round(scaled.attackRange[0] || 0));
         const finalAttackMax = roundNearestFive(Math.round(scaled.attackRange[1] || 0));
         const finalHealth = roundNearestFive(Math.round(health * (hakiApplied.haki.armament.multiplier || 1)));
-        const hakiParsed = parseHaki(card);
+        // prefer haki info from applyHakiStatBoosts so per-owner stars are included
+        const hakiParsed = hakiApplied.haki || parseHaki(card);
         if (special && special.range) special.range = roundRangeToFive([Math.round(special.range[0] || 0), Math.round(special.range[1] || 0)]);
 
         // Track special usage and exhaustion state for match
@@ -310,7 +311,8 @@ export async function execute(interactionOrMessage) {
         const finalAttackMin = roundNearestFive(Math.round(scaled.attackRange[0] || 0));
         const finalAttackMax = roundNearestFive(Math.round(scaled.attackRange[1] || 0));
         const finalHealth = roundNearestFive(Math.round(health * (hakiApplied.haki.armament.multiplier || 1)));
-        const hakiParsed = parseHaki(card);
+        // prefer haki info from applyHakiStatBoosts so per-owner stars are included
+        const hakiParsed = hakiApplied.haki || parseHaki(card);
         if (special && special.range) special.range = roundRangeToFive([Math.round(special.range[0] || 0), Math.round(special.range[1] || 0)]);
 
         return { cardId, card, scaled: { attackRange: [finalAttackMin, finalAttackMax], specialAttack: special, power: finalPower }, health: finalHealth, maxHealth: finalHealth, level, stamina: 3, attackedLastTurn: false, haki: hakiParsed, dodgeChance: (hakiParsed.observation.stars || 0) * 0.05 };
@@ -511,7 +513,17 @@ async function startDuelTurn(sessionId, channel) {
         const selFilter = (ii) => ii.user.id === attacker.userId && ii.customId && ii.customId.startsWith('duel_haki_select');
           const selCollector = i.channel.createMessageComponentCollector({ filter: selFilter, time: 20000 });
           selCollector.on('collect', async ii => {
-            try { if (!ii.deferred && !ii.replied) await ii.deferUpdate(); } catch (err) { if (!(err && err.code === 10062)) console.error('defer err', err); }
+            try {
+              if (!ii.deferred && !ii.replied) {
+                await ii.deferUpdate();
+              }
+            } catch (err) {
+              if (err && err.code === 10062) return; // Interaction expired
+              try {
+                await ii.reply({ content: "Error processing your action. Please try again.", ephemeral: true });
+              } catch (e) {}
+              return;
+            }
             const selParts = ii.customId.split(':');
             const selIdx = parseInt(selParts[2]);
             try {
@@ -548,8 +560,11 @@ async function startDuelTurn(sessionId, channel) {
     if (collected.size === 0) {
       if (hasPlayable) {
         // Player had playable options but didn't act — they forfeit the duel
-        try { await channel.send(`${attacker.user} did not act in time and forfeits the duel.`); } catch (e) {}
         const s = DUEL_SESSIONS.get(sessionId);
+        // Only send timeout message if duel wasn't already forfeited by user
+        if (!s || !s.forfeited) {
+          try { await channel.send(`${attacker.user} did not act in time and forfeits the duel.`); } catch (e) {}
+        }
         if (s) s.timedOut = true;
         session.currentTurn = defender.userId;
         await endDuel(sessionId, defender, attacker, channel);
@@ -597,7 +612,20 @@ async function selectAttackType(sessionId, charIdx, msg, attacker, channel) {
   collector.on("collect", async i => {
     if (!i.customId.startsWith("duel_attack")) return;
     
-    try { if (!i.deferred && !i.replied) await i.deferUpdate(); } catch (e) { if (!(e && e.code === 10062)) console.error('deferUpdate error', e); }
+    try {
+      if (!i.deferred && !i.replied) {
+        await i.deferUpdate();
+      }
+    } catch (e) {
+      if (e && e.code === 10062) return; // Interaction expired, exit
+      try {
+        // If defer fails, try to reply instead
+        await i.reply({ content: "Error processing your action. Please try again.", ephemeral: true });
+      } catch (err) {
+        // Give up silently if both defer and reply fail
+      }
+      return;
+    }
     const attackType = i.customId.split(":")[3];
 
     // Now select target
@@ -655,7 +683,20 @@ async function selectTarget(sessionId, charIdx, attackType, msg, attacker, defen
   collector.on("collect", async i => {
     if (!i.customId.startsWith("duel_target")) return;
     
-    try { if (!i.deferred && !i.replied) await i.deferUpdate(); } catch (e) { if (!(e && e.code === 10062)) console.error('deferUpdate error', e); }
+    try {
+      if (!i.deferred && !i.replied) {
+        await i.deferUpdate();
+      }
+    } catch (e) {
+      if (e && e.code === 10062) return; // Interaction expired, exit
+      try {
+        // If defer fails, try to reply instead
+        await i.reply({ content: "Error processing your action. Please try again.", ephemeral: true });
+      } catch (err) {
+        // Give up silently if both defer and reply fail
+      }
+      return;
+    }
     const targetIdx = parseInt(i.customId.split(":")[4]);
 
     // Execute attack
@@ -693,7 +734,7 @@ async function handleHakiMenu(sessionId, charIdx, msg, attacker, defender, chann
   // Conqueror basic
   if (haki.conqueror && haki.conqueror.stars > 0) opts.push({ id: 'conqueror', label: 'Conqueror Strike', cost: 2, style: ButtonStyle.Success });
   // Conqueror AoE (available if card has conqueror at all) — base 5% even at 0 stars
-  if (haki.conqueror && haki.conqueror.present) opts.push({ id: 'conq_aoe', label: 'Conqueror AoE', cost: 3, style: ButtonStyle.Danger });
+  if (haki.conqueror && haki.conqueror.present) opts.push({ id: 'conq_aoe', label: 'Conqueror AoE', cost: 2, style: ButtonStyle.Danger });
 
   if (opts.length === 0) {
     try { await interaction.followUp({ content: 'This character has no Haki abilities.', ephemeral: true }); } catch (e) {}
@@ -712,7 +753,20 @@ async function handleHakiMenu(sessionId, charIdx, msg, attacker, defender, chann
   const collector2 = interaction.channel.createMessageComponentCollector({ filter: collectorMsgFilter, time: 20000 });
   collector2.on('collect', async i => {
     if (!i.customId.startsWith('duel_haki_use')) return;
-    try { if (!i.deferred && !i.replied) await i.deferUpdate(); } catch (e) { if (!(e && e.code === 10062)) console.error('deferUpdate error', e); }
+    try {
+      if (!i.deferred && !i.replied) {
+        await i.deferUpdate();
+      }
+    } catch (e) {
+      if (e && e.code === 10062) return; // Interaction expired, exit
+      try {
+        // If defer fails, try to reply instead
+        await i.reply({ content: "Error processing your action. Please try again.", ephemeral: true });
+      } catch (err) {
+        // Give up silently if both defer and reply fail
+      }
+      return;
+    }
     const parts = i.customId.split(':');
     const ability = parts[3];
     try {
@@ -880,12 +934,12 @@ async function performHakiAbility(sessionId, charIdx, ability, attacker, defende
   }
 
   if (ability === 'conq_aoe') {
-    if ((card.stamina || 0) < 3) { await interaction.followUp({ content: 'Not enough stamina for Conqueror AoE.', ephemeral: true }); return; }
-    card.stamina = Math.max(0, card.stamina - 3);
+    if ((card.stamina || 0) < 2) { await interaction.followUp({ content: 'Not enough stamina for Conqueror AoE.', ephemeral: true }); return; }
+    card.stamina = Math.max(0, card.stamina - 2);
     const stars = (card.haki && card.haki.conqueror && card.haki.conqueror.stars) || 0;
     const base = 0.05; // 5% base even at 0 stars
     const dmgPct = base + (stars * 0.10);
-    const dmg = Math.max(1, Math.round(card.maxHealth * dmgPct));
+    const dmg = Math.round(card.maxHealth * dmgPct);
     for (const c of defender.cards) {
       if (c.health > 0) {
         c.health = Math.max(0, c.health - dmg);
@@ -1252,6 +1306,8 @@ export async function forfeitByUser(userId, channel, requester) {
       const loser = p1.userId === userId ? p1 : p2;
       const winner = p1.userId === userId ? p2 : p1;
       try {
+        // Mark as forfeited to prevent double timeout message
+        sess.forfeited = true;
         const embed = makeEmbed("Duel Forfeited", `${loser.user.username} has forfeited the duel. ${winner.user.username} wins.`);
         try {
           const msg = await channel.messages.fetch(sess.msgId);
